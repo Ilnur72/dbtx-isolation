@@ -1,3 +1,10 @@
+/*
+ * Types only. Nothing in this file emits runtime code, so every module can
+ * reach it with `import type` and no import edge is created — which keeps
+ * admin.ts, the drivers and the strategies free of cycles. Config defaults and
+ * validation live in `core/config.ts`.
+ */
+
 /**
  * Which isolation strategy a run uses (SPEC §5).
  *
@@ -7,19 +14,6 @@
  *   connections and correct `now()` semantics.
  */
 export type StrategyName = 'transaction' | 'database'
-
-/** Default value for `DbtxConfig.prefix`. */
-export const DEFAULT_PREFIX = 'dbtx'
-
-/**
- * A prefix becomes part of Postgres identifiers (database names, savepoint
- * names), so it is restricted to lowercase identifier characters and kept
- * short enough that `<prefix>_<hash>_<poolId>` stays inside the 63-byte limit.
- */
-export const PREFIX_PATTERN = /^[a-z_][a-z0-9_]{0,20}$/
-
-/** Postgres truncates identifiers beyond this many bytes (`NAMEDATALEN - 1`). */
-export const MAX_IDENTIFIER_BYTES = 63
 
 /** User-supplied configuration, as passed to the Vitest plugin (SPEC §4). */
 export interface DbtxConfig {
@@ -37,9 +31,15 @@ export interface DbtxConfig {
    */
   resetSequences?: boolean
   /**
+   * Turn dbtx's warnings into errors — most importantly a test that finished
+   * without a single intercepted query, which usually means dbtx patched a
+   * different copy of `pg` than the application uses. Defaults to `false`.
+   */
+  strict?: boolean
+  /**
    * Prefix for the identifiers dbtx creates: the `<prefix>_*` databases it
    * clones and drops (SPEC §3.6) and the savepoints it emits (SPEC §3.2).
-   * Must match {@link PREFIX_PATTERN}. Defaults to `'dbtx'`.
+   * Must match `PREFIX_PATTERN` in `core/config.ts`. Defaults to `'dbtx'`.
    */
   prefix?: string
 }
@@ -48,47 +48,8 @@ export interface DbtxConfig {
 export interface ResolvedConfig extends DbtxConfig {
   strategy: StrategyName
   resetSequences: boolean
+  strict: boolean
   prefix: string
-}
-
-/** Throw unless `prefix` is safe to embed in a Postgres identifier. */
-export function assertValidPrefix(prefix: string): void {
-  if (!PREFIX_PATTERN.test(prefix)) {
-    throw new Error(
-      `dbtx: invalid prefix ${JSON.stringify(prefix)}. It becomes part of Postgres ` +
-        `identifiers, so it must match ${String(PREFIX_PATTERN)} — lowercase, starting ` +
-        `with a letter or underscore, at most 21 characters.`,
-    )
-  }
-}
-
-/**
- * Throw if a generated identifier would be silently truncated by Postgres.
- * Truncation is the dangerous failure here: two distinct databases or
- * savepoints could collapse onto one name.
- */
-export function assertIdentifierFits(identifier: string): string {
-  const bytes = Buffer.byteLength(identifier, 'utf8')
-  if (bytes > MAX_IDENTIFIER_BYTES) {
-    throw new Error(
-      `dbtx: generated identifier ${JSON.stringify(identifier)} is ${bytes} bytes, over ` +
-        `the Postgres limit of ${MAX_IDENTIFIER_BYTES}. Postgres would truncate it, which ` +
-        `can make two names collide. Use a shorter \`prefix\`.`,
-    )
-  }
-  return identifier
-}
-
-/** Apply defaults and validate. The single place a prefix is checked. */
-export function resolveConfig(config: DbtxConfig): ResolvedConfig {
-  const prefix = config.prefix ?? DEFAULT_PREFIX
-  assertValidPrefix(prefix)
-  return {
-    ...config,
-    strategy: config.strategy ?? 'transaction',
-    resetSequences: config.resetSequences ?? false,
-    prefix,
-  }
 }
 
 /** Whatever `globalSetup` produced, handed back to `globalTeardown` and to

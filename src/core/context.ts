@@ -1,10 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import {
-  assertIdentifierFits,
-  assertValidPrefix,
-  DEFAULT_PREFIX,
-  type ClientLike,
-} from '../types.js'
+import type { ClientLike } from '../types.js'
+import { assertIdentifierFits, assertValidPrefix, DEFAULT_PREFIX } from './config.js'
 
 /**
  * Per-test state (SPEC §3.4).
@@ -25,6 +21,18 @@ export interface TestCtx {
   bypass: boolean
   /** Clients that have an open test transaction and must be rolled back. */
   clients: Set<ClientLike>
+  /**
+   * Errors that happened out of band — a lazy `BEGIN` that was enqueued but
+   * failed, say. Nobody is awaiting those promises, so without this they would
+   * surface as an unhandled rejection, or not at all. `afterEach` reports them.
+   */
+  failures: unknown[]
+  /**
+   * How many statements dbtx actually saw in this test. Zero at the end of a
+   * test that ran queries means the patch never took effect — typically dbtx
+   * patched a different copy of `pg` than the application imported.
+   */
+  intercepted: number
 }
 
 /**
@@ -63,7 +71,22 @@ export function newCtx(id: string = nextCtxId()): TestCtx {
     active: true,
     bypass: false,
     clients: new Set(),
+    failures: [],
+    intercepted: 0,
   }
+}
+
+/**
+ * Record an error that nothing is awaiting, so `afterEach` can surface it
+ * instead of letting it become an unhandled rejection.
+ */
+export function recordFailure(ctx: TestCtx, err: unknown): void {
+  ctx.failures.push(err)
+}
+
+/** Take and clear the recorded out-of-band errors. */
+export function takeFailures(ctx: TestCtx): unknown[] {
+  return ctx.failures.splice(0, ctx.failures.length)
 }
 
 /** The context for the current test, if any. ALS first, then the fallback. */

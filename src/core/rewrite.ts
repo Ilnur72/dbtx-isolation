@@ -50,7 +50,10 @@ const AND_CHAIN = /\bAND\s+CHAIN\b/i
  * Statements Postgres refuses to run inside a transaction block. Under
  * `strategy: 'transaction'` the whole test *is* a transaction block, so these
  * cannot work in principle — better a clear error than Postgres's own.
- * `DISCARD` additionally resets the session state we pin (SPEC §3.3).
+ *
+ * Only `DISCARD ALL` belongs here: the restriction in the Postgres docs is
+ * specific to it, and `DISCARD PLANS` / `SEQUENCES` / `TEMP` run inside a
+ * transaction block without disturbing the pinned session.
  */
 const CANNOT_RUN_IN_TRANSACTION: ReadonlyArray<readonly [RegExp, string]> = [
   [/^VACUUM\b/i, 'VACUUM'],
@@ -61,8 +64,11 @@ const CANNOT_RUN_IN_TRANSACTION: ReadonlyArray<readonly [RegExp, string]> = [
   [/^DROP\s+DATABASE\b/i, 'DROP DATABASE'],
   [/^ALTER\s+SYSTEM\b/i, 'ALTER SYSTEM'],
   [/^PREPARE\s+TRANSACTION\b/i, 'PREPARE TRANSACTION'],
-  [/^DISCARD\b/i, 'DISCARD'],
+  [/^DISCARD\s+ALL\b/i, 'DISCARD ALL'],
 ]
+
+/** The `DISCARD` variants that are fine inside a transaction, noted for debugging. */
+const HARMLESS_DISCARD = /^DISCARD\s+(?:PLANS|SEQUENCES|TEMP(?:ORARY)?)\b/i
 
 /**
  * Strip leading comments and surrounding whitespace, and drop trailing
@@ -102,10 +108,15 @@ export function assertSupported(sql: string): void {
     )
   }
 
+  if (HARMLESS_DISCARD.test(stmt)) {
+    log('DISCARD variant that is safe inside a transaction, passing through:', stmt)
+    return
+  }
+
   for (const [pattern, name] of CANNOT_RUN_IN_TRANSACTION) {
     if (!pattern.test(stmt)) continue
     const extra =
-      name === 'DISCARD'
+      name === 'DISCARD ALL'
         ? ' It also resets the session state dbtx pins to keep the test transaction alive.'
         : ''
     throw new DbtxUnsupportedStatementError(

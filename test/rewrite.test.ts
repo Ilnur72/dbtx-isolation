@@ -6,7 +6,7 @@ import {
   rewrite,
   SUPPRESSED,
 } from '../src/core/rewrite.js'
-import { assertValidPrefix, resolveConfig } from '../src/types.js'
+import { assertValidPrefix, resolveConfig } from '../src/core/config.js'
 
 // SPEC §7, criteria 1-7. These must pass with no database available.
 
@@ -342,7 +342,6 @@ describe('statements dbtx refuses rather than mishandling', () => {
       "PREPARE TRANSACTION 'tx1'",
       'DISCARD ALL',
       'discard all',
-      'DISCARD PLANS',
     ]) {
       expect(() => rewrite(sql, ctx()), sql).toThrow(DbtxUnsupportedStatementError)
     }
@@ -390,5 +389,18 @@ describe('prefix validation', () => {
     const id = nextCtxId('a'.repeat(21))
     expect(id).toMatch(/^a{21}_\d+_\d+$/)
     expect(Buffer.byteLength(`${id}_sp_999999`)).toBeLessThanOrEqual(63)
+  })
+})
+
+describe('DISCARD, which is only restricted in its ALL form', () => {
+  it('refuses DISCARD ALL', () => {
+    expect(() => rewrite('DISCARD ALL', ctx())).toThrow(DbtxUnsupportedStatementError)
+  })
+
+  it('passes the other variants through, since they work inside a transaction', () => {
+    const c = ctx()
+    for (const sql of ['DISCARD PLANS', 'DISCARD SEQUENCES', 'DISCARD TEMP', 'DISCARD TEMPORARY']) {
+      expect(rewrite(sql, c), sql).toBe(sql)
+    }
   })
 })

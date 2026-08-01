@@ -1,4 +1,4 @@
-import { activeCtx, type TestCtx } from '../core/context.js'
+import { activeCtx, recordFailure, type TestCtx } from '../core/context.js'
 import { log, warn } from '../core/log.js'
 import { needsTransaction, rewrite } from '../core/rewrite.js'
 import type { ClientLike } from '../types.js'
@@ -283,9 +283,13 @@ export function patchPg(pg: PgModuleLike): boolean {
     ctx.clients.add(client)
     log('lazy BEGIN for context', ctx.id)
     const pending = originalQuery.call(client, 'BEGIN')
+    // Nothing awaits this BEGIN, so its rejection has to be caught here or Node
+    // reports an unhandled rejection and the real cause is lost. The error is
+    // parked on the context for afterEach to surface.
     if (isPromiseLike(pending)) {
       Promise.resolve(pending).catch((err: unknown) => {
         warn('BEGIN failed; this test is not isolated:', err)
+        recordFailure(ctx, err)
       })
     }
   }
@@ -296,6 +300,11 @@ export function patchPg(pg: PgModuleLike): boolean {
     if (ctx === undefined || isExempt(this) || target === null || target === undefined) {
       return originalQuery.apply(this, args)
     }
+
+    // Counted before anything can throw: a test that ends with zero
+    // intercepted statements is how "dbtx patched a different copy of pg"
+    // announces itself.
+    ctx.intercepted += 1
 
     const text = textOf(target)
     if (text === undefined) {
