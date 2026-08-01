@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { newCtx } from '../src/core/context.js'
-import { needsTransaction, rewrite, SUPPRESSED } from '../src/core/rewrite.js'
+import { newCtx, nextCtxId } from '../src/core/context.js'
+import {
+  DbtxUnsupportedStatementError,
+  needsTransaction,
+  rewrite,
+  SUPPRESSED,
+} from '../src/core/rewrite.js'
+import { assertValidPrefix, resolveConfig } from '../src/types.js'
 
 // SPEC §7, criteria 1-7. These must pass with no database available.
 
@@ -9,21 +15,21 @@ const ctx = (): ReturnType<typeof newCtx> => newCtx('t1')
 describe('criterion 1 — BEGIN and START TRANSACTION produce savepoints', () => {
   it('rewrites BEGIN and increments depth', () => {
     const c = ctx()
-    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_1"')
+    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_sp_1"')
     expect(c.depth).toBe(1)
   })
 
   it('rewrites START TRANSACTION and increments depth', () => {
     const c = ctx()
-    expect(rewrite('START TRANSACTION', c)).toBe('SAVEPOINT "t1_1"')
+    expect(rewrite('START TRANSACTION', c)).toBe('SAVEPOINT "t1_sp_1"')
     expect(c.depth).toBe(1)
   })
 
   it('numbers nested savepoints by depth', () => {
     const c = ctx()
-    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_1"')
-    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_2"')
-    expect(rewrite('START TRANSACTION', c)).toBe('SAVEPOINT "t1_3"')
+    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_sp_1"')
+    expect(rewrite('BEGIN', c)).toBe('SAVEPOINT "t1_sp_2"')
+    expect(rewrite('START TRANSACTION', c)).toBe('SAVEPOINT "t1_sp_3"')
     expect(c.depth).toBe(3)
   })
 
@@ -42,7 +48,7 @@ describe('criterion 1 — BEGIN and START TRANSACTION produce savepoints', () =>
       '/* trace-id */ BEGIN',
     ]) {
       const c = ctx()
-      expect(rewrite(sql, c), sql).toBe('SAVEPOINT "t1_1"')
+      expect(rewrite(sql, c), sql).toBe('SAVEPOINT "t1_sp_1"')
       expect(c.depth, sql).toBe(1)
     }
   })
@@ -50,8 +56,8 @@ describe('criterion 1 — BEGIN and START TRANSACTION produce savepoints', () =>
   it('prefixes savepoint names per context so parallel tests cannot collide', () => {
     const a = newCtx('ctx_a')
     const b = newCtx('ctx_b')
-    expect(rewrite('BEGIN', a)).toBe('SAVEPOINT "ctx_a_1"')
-    expect(rewrite('BEGIN', b)).toBe('SAVEPOINT "ctx_b_1"')
+    expect(rewrite('BEGIN', a)).toBe('SAVEPOINT "ctx_a_sp_1"')
+    expect(rewrite('BEGIN', b)).toBe('SAVEPOINT "ctx_b_sp_1"')
   })
 })
 
@@ -59,7 +65,7 @@ describe('criterion 2 — COMMIT releases the savepoint and decrements depth', (
   it('releases the savepoint at the current depth', () => {
     const c = ctx()
     rewrite('BEGIN', c)
-    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_1"')
+    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_sp_1"')
     expect(c.depth).toBe(0)
   })
 
@@ -67,24 +73,28 @@ describe('criterion 2 — COMMIT releases the savepoint and decrements depth', (
     const c = ctx()
     rewrite('BEGIN', c)
     rewrite('BEGIN', c)
-    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_2"')
+    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_sp_2"')
     expect(c.depth).toBe(1)
-    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_1"')
+    expect(rewrite('COMMIT', c)).toBe('RELEASE SAVEPOINT "t1_sp_1"')
     expect(c.depth).toBe(0)
   })
 
-  it('treats END as the COMMIT alias it is', () => {
-    const c = ctx()
-    rewrite('BEGIN', c)
-    expect(rewrite('END', c)).toBe('RELEASE SAVEPOINT "t1_1"')
-    expect(c.depth).toBe(0)
-  })
-
-  it('accepts the syntactic variants ORMs emit', () => {
-    for (const sql of ['commit', 'COMMIT;', ' COMMIT ', 'COMMIT WORK', 'COMMIT TRANSACTION']) {
+  it('accepts the syntactic variants ORMs emit, including every END alias', () => {
+    for (const sql of [
+      'commit',
+      'COMMIT;',
+      ' COMMIT ',
+      'COMMIT WORK',
+      'COMMIT TRANSACTION',
+      'END',
+      'end',
+      'END WORK',
+      'END TRANSACTION',
+      'COMMIT AND NO CHAIN',
+    ]) {
       const c = ctx()
       rewrite('BEGIN', c)
-      expect(rewrite(sql, c), sql).toBe('RELEASE SAVEPOINT "t1_1"')
+      expect(rewrite(sql, c), sql).toBe('RELEASE SAVEPOINT "t1_sp_1"')
       expect(c.depth, sql).toBe(0)
     }
   })
@@ -94,7 +104,7 @@ describe('criterion 3 — bare ROLLBACK rolls back to the savepoint', () => {
   it('rolls back to the savepoint at the current depth', () => {
     const c = ctx()
     rewrite('BEGIN', c)
-    expect(rewrite('ROLLBACK', c)).toBe('ROLLBACK TO SAVEPOINT "t1_1"')
+    expect(rewrite('ROLLBACK', c)).toBe('ROLLBACK TO SAVEPOINT "t1_sp_1"')
     expect(c.depth).toBe(0)
   })
 
@@ -102,15 +112,26 @@ describe('criterion 3 — bare ROLLBACK rolls back to the savepoint', () => {
     const c = ctx()
     rewrite('BEGIN', c)
     rewrite('BEGIN', c)
-    expect(rewrite('ROLLBACK', c)).toBe('ROLLBACK TO SAVEPOINT "t1_2"')
+    expect(rewrite('ROLLBACK', c)).toBe('ROLLBACK TO SAVEPOINT "t1_sp_2"')
     expect(c.depth).toBe(1)
   })
 
-  it('accepts the syntactic variants ORMs emit', () => {
-    for (const sql of ['rollback', 'ROLLBACK;', ' ROLLBACK ', 'ROLLBACK WORK', 'ROLLBACK TRANSACTION']) {
+  it('accepts the syntactic variants ORMs emit, including every ABORT alias', () => {
+    for (const sql of [
+      'rollback',
+      'ROLLBACK;',
+      ' ROLLBACK ',
+      'ROLLBACK WORK',
+      'ROLLBACK TRANSACTION',
+      'ABORT',
+      'abort',
+      'ABORT WORK',
+      'ABORT TRANSACTION',
+      'ROLLBACK AND NO CHAIN',
+    ]) {
       const c = ctx()
       rewrite('BEGIN', c)
-      expect(rewrite(sql, c), sql).toBe('ROLLBACK TO SAVEPOINT "t1_1"')
+      expect(rewrite(sql, c), sql).toBe('ROLLBACK TO SAVEPOINT "t1_sp_1"')
       expect(c.depth, sql).toBe(0)
     }
   })
@@ -138,10 +159,12 @@ describe('criterion 4 — at depth 0, COMMIT and ROLLBACK are suppressed', () =>
     expect(c.depth).toBe(0)
   })
 
-  it('suppresses END too', () => {
-    const c = ctx()
-    expect(rewrite('END', c)).toBe(SUPPRESSED)
-    expect(c.depth).toBe(0)
+  it('suppresses the END and ABORT aliases too', () => {
+    for (const sql of ['END', 'END TRANSACTION', 'ABORT', 'ABORT WORK']) {
+      const c = ctx()
+      expect(rewrite(sql, c), sql).toBe(SUPPRESSED)
+      expect(c.depth, sql).toBe(0)
+    }
   })
 })
 
@@ -236,9 +259,40 @@ describe('criterion 7 — needsTransaction', () => {
     }
   })
 
-  it('treats EXPLAIN ANALYZE as a write, because it executes the statement', () => {
-    expect(needsTransaction('EXPLAIN ANALYZE INSERT INTO users DEFAULT VALUES')).toBe(true)
-    expect(needsTransaction('EXPLAIN (ANALYZE, BUFFERS) INSERT INTO users DEFAULT VALUES')).toBe(true)
+  it('treats EXPLAIN ANALYZE as a write, in every spelling', () => {
+    for (const sql of [
+      'EXPLAIN ANALYZE INSERT INTO users DEFAULT VALUES',
+      'EXPLAIN (ANALYZE) INSERT INTO users DEFAULT VALUES',
+      'EXPLAIN (ANALYZE, BUFFERS) INSERT INTO users DEFAULT VALUES',
+      'EXPLAIN (BUFFERS, ANALYZE) INSERT INTO users DEFAULT VALUES',
+      'EXPLAIN (ANALYZE true, BUFFERS) INSERT INTO users DEFAULT VALUES',
+      'explain analyse insert into users default values',
+    ]) {
+      expect(needsTransaction(sql), sql).toBe(true)
+    }
+  })
+
+  it('is true for the writes that hide behind a read-looking keyword', () => {
+    for (const sql of [
+      'SELECT * INTO archive FROM users',
+      'SELECT * FROM users FOR UPDATE',
+      'SELECT * FROM users FOR NO KEY UPDATE',
+      'SELECT * FROM users FOR SHARE',
+      'SELECT * FROM users FOR KEY SHARE',
+      'WITH x AS (UPDATE users SET n = 1 RETURNING *) SELECT * FROM x',
+      'WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x',
+      'CREATE TABLE archive AS SELECT * FROM users',
+      'CALL do_something()',
+      'REFRESH MATERIALIZED VIEW mv',
+      "COPY users FROM '/tmp/users.csv'",
+      'MERGE INTO a USING b ON a.id = b.id WHEN MATCHED THEN DELETE',
+    ]) {
+      expect(needsTransaction(sql), sql).toBe(true)
+    }
+  })
+
+  it('leaves a read-only CTE alone', () => {
+    expect(needsTransaction('WITH x AS (SELECT 1) SELECT * FROM x')).toBe(false)
   })
 
   it('is true for multi-statement strings that merely lead with a read', () => {
@@ -255,5 +309,86 @@ describe('criterion 7 — needsTransaction', () => {
     // COMMIT at depth 0 -> SELECT 1, which must not open a transaction.
     expect(needsTransaction(rewrite('COMMIT', c))).toBe(false)
     expect(needsTransaction(rewrite('ROLLBACK', c))).toBe(false)
+  })
+})
+
+describe('statements dbtx refuses rather than mishandling', () => {
+  it('rejects AND CHAIN, which would open a transaction outside our savepoints', () => {
+    for (const sql of ['COMMIT AND CHAIN', 'ROLLBACK AND CHAIN', 'commit and chain']) {
+      const c = ctx()
+      expect(() => rewrite(sql, c), sql).toThrow(DbtxUnsupportedStatementError)
+      expect(() => rewrite(sql, c), sql).toThrow('dbtx: AND CHAIN is not supported')
+      expect(c.depth, sql).toBe(0)
+    }
+  })
+
+  it('allows AND NO CHAIN, which is just the default behaviour', () => {
+    const c = ctx()
+    rewrite('BEGIN', c)
+    expect(rewrite('COMMIT AND NO CHAIN', c)).toBe('RELEASE SAVEPOINT "t1_sp_1"')
+  })
+
+  it('rejects statements Postgres cannot run inside a transaction block', () => {
+    for (const sql of [
+      'VACUUM',
+      'VACUUM FULL users',
+      'CREATE INDEX CONCURRENTLY idx ON users (id)',
+      'CREATE UNIQUE INDEX CONCURRENTLY idx ON users (id)',
+      'DROP INDEX CONCURRENTLY idx',
+      'REINDEX INDEX CONCURRENTLY idx',
+      'CREATE DATABASE other',
+      'DROP DATABASE other',
+      'ALTER SYSTEM SET work_mem = 64',
+      "PREPARE TRANSACTION 'tx1'",
+      'DISCARD ALL',
+      'discard all',
+      'DISCARD PLANS',
+    ]) {
+      expect(() => rewrite(sql, ctx()), sql).toThrow(DbtxUnsupportedStatementError)
+    }
+  })
+
+  it("points at strategy: 'database' instead of just failing", () => {
+    expect(() => rewrite('VACUUM', ctx())).toThrow(/strategy: 'database'/)
+  })
+
+  it('says why DISCARD in particular is refused', () => {
+    expect(() => rewrite('DISCARD ALL', ctx())).toThrow(/session state dbtx pins/)
+  })
+
+  it('does not mistake ordinary DDL for the concurrent forms', () => {
+    const c = ctx()
+    expect(rewrite('CREATE INDEX idx ON users (id)', c)).toBe('CREATE INDEX idx ON users (id)')
+    expect(rewrite('REINDEX INDEX idx', c)).toBe('REINDEX INDEX idx')
+    expect(rewrite('PREPARE stmt AS SELECT 1', c)).toBe('PREPARE stmt AS SELECT 1')
+  })
+})
+
+describe('prefix validation', () => {
+  it('accepts identifier-safe prefixes', () => {
+    for (const prefix of ['dbtx', 'a', '_x', 'my_app_tests', 'a'.repeat(21)]) {
+      expect(() => assertValidPrefix(prefix), prefix).not.toThrow()
+    }
+  })
+
+  it('rejects anything that would not survive as an identifier', () => {
+    for (const prefix of ['', 'DBTX', '1abc', 'my-app', 'my app', 'ünïcode', 'a'.repeat(22), 'x"y']) {
+      expect(() => assertValidPrefix(prefix), prefix).toThrow(/invalid prefix/)
+    }
+  })
+
+  it('validates through resolveConfig, and defaults to dbtx', () => {
+    expect(resolveConfig({ url: 'postgres://x' }).prefix).toBe('dbtx')
+    expect(resolveConfig({ url: 'postgres://x' }).strategy).toBe('transaction')
+    expect(resolveConfig({ url: 'postgres://x' }).resetSequences).toBe(false)
+    expect(() => resolveConfig({ url: 'postgres://x', prefix: 'Bad-Prefix' })).toThrow(
+      /invalid prefix/,
+    )
+  })
+
+  it('builds context ids that leave room for the savepoint suffix', () => {
+    const id = nextCtxId('a'.repeat(21))
+    expect(id).toMatch(/^a{21}_\d+_\d+$/)
+    expect(Buffer.byteLength(`${id}_sp_999999`)).toBeLessThanOrEqual(63)
   })
 })

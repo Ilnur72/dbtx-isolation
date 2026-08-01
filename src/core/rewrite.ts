@@ -8,17 +8,61 @@ import { log } from './log.js'
  */
 export const SUPPRESSED = 'SELECT 1'
 
-/** Statements that never need a transaction of their own (SPEC §7.7). */
-const READ_ONLY = /^(?:SELECT|SHOW|EXPLAIN)\b/i
+/** Raised for statements dbtx cannot honour under `strategy: 'transaction'`. */
+export class DbtxUnsupportedStatementError extends Error {
+  readonly statement: string
 
+  constructor(message: string, statement: string) {
+    super(message)
+    this.name = 'DbtxUnsupportedStatementError'
+    this.statement = statement
+  }
+}
+
+/*
+ * Transaction control, with every Postgres spelling of it. Missing one of
+ * these aliases is not cosmetic: an unrewritten COMMIT commits the test
+ * transaction itself and isolation is gone.
+ *
+ * BEGIN side:    BEGIN [WORK|TRANSACTION] [ISOLATION LEVEL ...|READ ONLY|
+ *                READ WRITE|[NOT] DEFERRABLE], START TRANSACTION [...]
+ * COMMIT side:   COMMIT [WORK|TRANSACTION], END [WORK|TRANSACTION]
+ * ROLLBACK side: ROLLBACK [WORK|TRANSACTION], ABORT [WORK|TRANSACTION]
+ *
+ * `COMMIT PREPARED` / `ROLLBACK PREPARED` are two-phase commit, not the same
+ * statement, and pass through. So do the caller's own savepoint statements:
+ * `SAVEPOINT x`, `RELEASE [SAVEPOINT] x` and `ROLLBACK TO [SAVEPOINT] x` —
+ * note the `SAVEPOINT` keyword is optional in the last two, which is why the
+ * ROLLBACK pattern excludes `TO` rather than looking for `TO SAVEPOINT`.
+ */
 const BEGIN = /^(?:BEGIN|START\s+TRANSACTION)\b/i
-// `END [WORK|TRANSACTION]` is a Postgres alias for COMMIT; if it were passed
-// through it would commit the whole test transaction. `COMMIT PREPARED` is a
-// different, two-phase statement and is left alone.
 const COMMIT = /^(?:COMMIT|END)\b(?!\s+PREPARED\b)/i
-// A bare rollback only. `ROLLBACK TO [SAVEPOINT] x` and `ROLLBACK PREPARED x`
-// are the caller's own savepoint handling and must pass through untouched.
-const ROLLBACK = /^ROLLBACK\b(?!\s+(?:TO|PREPARED)\b)/i
+const ROLLBACK = /^(?:ROLLBACK|ABORT)\b(?!\s+(?:TO|PREPARED)\b)/i
+
+/**
+ * `COMMIT AND CHAIN` / `ROLLBACK AND CHAIN` immediately open a new
+ * transaction, which would sit outside our savepoint stack. `AND NO CHAIN` is
+ * the default behaviour and is fine.
+ */
+const AND_CHAIN = /\bAND\s+CHAIN\b/i
+
+/**
+ * Statements Postgres refuses to run inside a transaction block. Under
+ * `strategy: 'transaction'` the whole test *is* a transaction block, so these
+ * cannot work in principle — better a clear error than Postgres's own.
+ * `DISCARD` additionally resets the session state we pin (SPEC §3.3).
+ */
+const CANNOT_RUN_IN_TRANSACTION: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^VACUUM\b/i, 'VACUUM'],
+  [/^CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i, 'CREATE INDEX CONCURRENTLY'],
+  [/^DROP\s+INDEX\s+CONCURRENTLY\b/i, 'DROP INDEX CONCURRENTLY'],
+  [/^REINDEX\b[\s\S]*\bCONCURRENTLY\b/i, 'REINDEX CONCURRENTLY'],
+  [/^CREATE\s+DATABASE\b/i, 'CREATE DATABASE'],
+  [/^DROP\s+DATABASE\b/i, 'DROP DATABASE'],
+  [/^ALTER\s+SYSTEM\b/i, 'ALTER SYSTEM'],
+  [/^PREPARE\s+TRANSACTION\b/i, 'PREPARE TRANSACTION'],
+  [/^DISCARD\b/i, 'DISCARD'],
+]
 
 /**
  * Strip leading comments and surrounding whitespace, and drop trailing
@@ -36,14 +80,50 @@ function normalize(sql: string): string {
   return s.replace(/[\s;]+$/, '')
 }
 
-/** Quote a savepoint name for this context: `"<ctxId>_<n>"`. */
+/** Quote a savepoint name for this context: `"<ctxId>_sp_<depth>"`. */
 export function savepointName(ctx: TestCtx, depth: number): string {
-  return `"${ctx.id.replace(/"/g, '""')}_${depth}"`
+  return `"${ctx.id.replace(/"/g, '""')}_sp_${depth}"`
+}
+
+/**
+ * Reject what we cannot honour, loudly. Called for every statement while a
+ * test is active, so a silent wrong answer is never the outcome.
+ */
+export function assertSupported(sql: string): void {
+  const stmt = normalize(sql)
+  if (stmt === '') return
+
+  if (AND_CHAIN.test(stmt) && (COMMIT.test(stmt) || ROLLBACK.test(stmt))) {
+    throw new DbtxUnsupportedStatementError(
+      'dbtx: AND CHAIN is not supported. It opens a new transaction immediately, ' +
+        "outside the test's savepoint stack, so isolation could not be guaranteed. " +
+        `Statement: ${JSON.stringify(stmt)}`,
+      stmt,
+    )
+  }
+
+  for (const [pattern, name] of CANNOT_RUN_IN_TRANSACTION) {
+    if (!pattern.test(stmt)) continue
+    const extra =
+      name === 'DISCARD'
+        ? ' It also resets the session state dbtx pins to keep the test transaction alive.'
+        : ''
+    throw new DbtxUnsupportedStatementError(
+      `dbtx: ${name} cannot run inside a transaction block, and under ` +
+        `strategy: 'transaction' the whole test is one.${extra} Use strategy: 'database' ` +
+        `for this test file, or run the statement outside the test. ` +
+        `Statement: ${JSON.stringify(stmt)}`,
+      stmt,
+    )
+  }
 }
 
 /**
  * Rewrite the ORM's own transaction control into savepoints scoped to `ctx`
  * (SPEC §3.2). Mutates `ctx.depth`. Any other statement is returned untouched.
+ *
+ * Throws for statements that cannot work under this strategy — see
+ * {@link assertSupported}.
  *
  * Call this before `needsTransaction()`: the two compose, so a `BEGIN` becomes
  * a `SAVEPOINT` (which does need a transaction) and a depth-0 `COMMIT` becomes
@@ -55,6 +135,8 @@ export function rewrite(sql: string, ctx: TestCtx): string {
   // A multi-statement string such as `BEGIN; INSERT ...` must pass through
   // whole: rewriting it on its leading keyword would throw the rest away.
   if (stmt.includes(';')) return sql
+
+  assertSupported(stmt)
 
   if (BEGIN.test(stmt)) {
     const name = savepointName(ctx, ++ctx.depth)
@@ -85,10 +167,18 @@ export function rewrite(sql: string, ctx: TestCtx): string {
   return sql
 }
 
+/** Row locking makes a `SELECT` transactional even though it writes nothing. */
+const LOCKING = /\bFOR\s+(?:NO\s+KEY\s+UPDATE|KEY\s+SHARE|UPDATE|SHARE)\b/i
+/** `SELECT ... INTO` creates a table. */
+const SELECT_INTO = /\bINTO\b/i
+/** A CTE is only a read if nothing inside it modifies data. */
+const DATA_MODIFYING = /\b(?:INSERT|UPDATE|DELETE|MERGE)\b/i
+
 /**
  * Everything after `EXPLAIN` that is still an option rather than the statement
- * being explained: either a parenthesised option list or the bare
- * `ANALYZE`/`VERBOSE` keywords.
+ * being explained: either a parenthesised option list — `EXPLAIN (ANALYZE)`,
+ * `EXPLAIN (BUFFERS, ANALYZE)`, `EXPLAIN (ANALYZE true, BUFFERS)` — or the
+ * bare `ANALYZE`/`VERBOSE` keywords.
  */
 function explainOptions(rest: string): string {
   const trimmed = rest.trimStart()
@@ -104,10 +194,12 @@ function explainOptions(rest: string): string {
  * Whether this statement must run inside the test transaction, i.e. whether a
  * lazy `BEGIN` has to be sent first (SPEC §3.1).
  *
- * False for `SELECT` / `SHOW` / `EXPLAIN`; true for anything else, so an
- * unrecognised statement is treated as a write rather than silently escaping
- * isolation. `EXPLAIN ANALYZE` really executes its inner statement, so it
- * counts as a write.
+ * The default answer is true, so anything unrecognised is treated as a write
+ * rather than silently escaping isolation. Only `SELECT`, `SHOW`, read-only
+ * CTEs and non-executing `EXPLAIN` are exempt.
+ *
+ * Known hole, documented rather than hidden: `SELECT my_function()` may write
+ * inside the function body and is indistinguishable from a read at this level.
  */
 export function needsTransaction(sql: string): boolean {
   const stmt = normalize(sql)
@@ -115,11 +207,22 @@ export function needsTransaction(sql: string): boolean {
   // `SELECT 1; INSERT ...` leads with a read but is not one, so a
   // multi-statement string falls back to the safe answer.
   if (stmt.includes(';')) return true
-  if (!READ_ONLY.test(stmt)) return true
 
-  const explain = /^EXPLAIN\b/i.exec(stmt)
-  if (explain !== null) {
-    return /\bANALY[SZ]E\b/i.test(explainOptions(stmt.slice(explain[0].length)))
+  const head = /^[A-Za-z]+/.exec(stmt)?.[0].toUpperCase() ?? ''
+  switch (head) {
+    case 'SHOW':
+      return false
+    case 'SELECT':
+      return LOCKING.test(stmt) || SELECT_INTO.test(stmt)
+    case 'WITH':
+      return DATA_MODIFYING.test(stmt) || LOCKING.test(stmt)
+    case 'EXPLAIN': {
+      const rest = stmt.slice('EXPLAIN'.length)
+      return /\bANALY[SZ]E\b/i.test(explainOptions(rest))
+    }
+    default:
+      // INSERT, UPDATE, DELETE, MERGE, CALL, COPY, TRUNCATE, REFRESH
+      // MATERIALIZED VIEW, CREATE TABLE AS and every DDL statement land here.
+      return true
   }
-  return false
 }

@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { ClientLike } from '../types.js'
+import {
+  assertIdentifierFits,
+  assertValidPrefix,
+  DEFAULT_PREFIX,
+  type ClientLike,
+} from '../types.js'
 
 /**
  * Per-test state (SPEC §3.4).
@@ -33,11 +38,27 @@ export const als = new AsyncLocalStorage<TestCtx>()
 let ambient: TestCtx | undefined
 let counter = 0
 
-/** Create a fresh, active context. */
-export function newCtx(id?: string): TestCtx {
+/**
+ * Build the next context id: `<prefix>_<poolId>_<n>`.
+ *
+ * Savepoint names are derived from this (`"<ctxId>_sp_<depth>"`), so the id is
+ * checked against the Postgres identifier limit with room left for the
+ * `_sp_<depth>` suffix. `VITEST_POOL_ID` is bounded by `maxWorkers`, unlike
+ * `VITEST_WORKER_ID` (SPEC §3.5), which keeps the name short.
+ */
+export function nextCtxId(prefix: string = DEFAULT_PREFIX): string {
+  assertValidPrefix(prefix)
   const pool = process.env['VITEST_POOL_ID'] ?? '0'
+  const id = `${prefix}_${pool}_${++counter}`
+  // Reserve `_sp_` plus a generous depth for the savepoint suffix.
+  assertIdentifierFits(`${id}_sp_999999`)
+  return id
+}
+
+/** Create a fresh, active context. */
+export function newCtx(id: string = nextCtxId()): TestCtx {
   return {
-    id: id ?? `dbtx_${pool}_${++counter}`,
+    id,
     depth: 0,
     active: true,
     bypass: false,
