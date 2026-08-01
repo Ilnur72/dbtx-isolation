@@ -8,6 +8,7 @@ export {
   isExempt,
   isPatched,
   patchPg,
+  type PgClientInstance,
   pinnedClients,
   releasePins,
   rollbackClient,
@@ -50,6 +51,21 @@ export async function loadPg(): Promise<PgModuleLike | undefined> {
   if (looksLikePg(mod)) return mod
   log('pg resolved but does not look like the module we expect; leaving it alone')
   return undefined
+}
+
+/**
+ * Like {@link loadPg}, but for callers that cannot work without it — the
+ * template and clone machinery in `admin.ts`, for instance.
+ */
+export async function loadPgOrThrow(): Promise<PgModuleLike> {
+  const pg = await loadPg()
+  if (pg === undefined) {
+    throw new Error(
+      'dbtx: this needs the `pg` package, which is an optional peer dependency. ' +
+        'Install it with `npm install --save-dev pg`.',
+    )
+  }
+  return pg
 }
 
 /**

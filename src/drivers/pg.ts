@@ -37,9 +37,18 @@ export interface PgPool {
   end: EndFn
 }
 
+/** A constructed `pg.Client`, as `admin.ts` uses it. */
+export interface PgClientInstance extends PgClient {
+  connect(): Promise<void>
+  end(): Promise<void>
+}
+
 /** The parts of the `pg` module we touch. */
 export interface PgModuleLike {
-  Client: { prototype: PgClient }
+  Client: {
+    new (config: { connectionString: string }): PgClientInstance
+    prototype: PgClient
+  }
   Pool: { prototype: PgPool }
 }
 
