@@ -13,13 +13,25 @@ export function debugEnabled(): boolean {
   return v !== '' && v !== '0' && v !== 'false' && v !== 'off'
 }
 
+function tag(): string {
+  const pool = process.env['VITEST_POOL_ID']
+  return pool === undefined ? '[dbtx]' : `[dbtx:${pool}]`
+}
+
 /**
  * Write a debug line. Goes to stderr so it never mixes into a reporter's
  * stdout stream.
  */
 export function log(...args: unknown[]): void {
   if (!debugEnabled()) return
-  const pool = process.env['VITEST_POOL_ID']
-  const tag = pool === undefined ? '[dbtx]' : `[dbtx:${pool}]`
-  console.error(tag, ...args)
+  console.error(tag(), ...args)
+}
+
+/**
+ * Report something the user needs to know about even when debugging is off —
+ * a rollback that failed, say. Silence there would leave a broken test
+ * impossible to diagnose.
+ */
+export function warn(...args: unknown[]): void {
+  console.error(tag(), ...args)
 }

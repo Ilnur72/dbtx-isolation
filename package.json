@@ -50,7 +50,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:unit": "vitest run test/rewrite.test.ts"
+    "test:unit": "vitest run test/rewrite.test.ts test/driver.test.ts"
   },
   "peerDependencies": {
     "pg": ">=8.7.0",
