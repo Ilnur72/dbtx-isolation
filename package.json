@@ -1,0 +1,74 @@
+{
+  "name": "dbtx",
+  "version": "0.1.0",
+  "description": "ORM-agnostic test database isolation for Node.js. Every test starts against a clean database, with zero boilerplate.",
+  "keywords": [
+    "test",
+    "testing",
+    "database",
+    "postgres",
+    "postgresql",
+    "pg",
+    "transaction",
+    "isolation",
+    "prisma",
+    "drizzle",
+    "kysely",
+    "knex",
+    "typeorm",
+    "sequelize",
+    "vitest"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vitest": {
+      "types": "./dist/runners/vitest.d.ts",
+      "default": "./dist/runners/vitest.js"
+    },
+    "./vitest/global-setup": {
+      "types": "./dist/runners/vitest-global-setup.d.ts",
+      "default": "./dist/runners/vitest-global-setup.js"
+    },
+    "./vitest/setup": {
+      "types": "./dist/runners/vitest-setup.d.ts",
+      "default": "./dist/runners/vitest-setup.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:unit": "vitest run test/rewrite.test.ts"
+  },
+  "peerDependencies": {
+    "pg": ">=8.7.0",
+    "vitest": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/pg": "^8.15.5",
+    "pg": "^8.16.3",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
