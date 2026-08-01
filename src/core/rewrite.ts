@@ -22,9 +22,7 @@ const ROLLBACK = /^ROLLBACK\b(?!\s+(?:TO|PREPARED)\b)/i
 
 /**
  * Strip leading comments and surrounding whitespace, and drop trailing
- * semicolons, so the leading keyword can be matched. Multi-statement strings
- * (`BEGIN; INSERT ...`) never match the anchored patterns below and therefore
- * pass through unchanged, which is the safe outcome.
+ * semicolons, so the leading keyword can be matched.
  */
 function normalize(sql: string): string {
   let s = sql
@@ -54,6 +52,9 @@ export function savepointName(ctx: TestCtx, depth: number): string {
 export function rewrite(sql: string, ctx: TestCtx): string {
   const stmt = normalize(sql)
   if (stmt === '') return sql
+  // A multi-statement string such as `BEGIN; INSERT ...` must pass through
+  // whole: rewriting it on its leading keyword would throw the rest away.
+  if (stmt.includes(';')) return sql
 
   if (BEGIN.test(stmt)) {
     const name = savepointName(ctx, ++ctx.depth)
@@ -111,6 +112,9 @@ function explainOptions(rest: string): string {
 export function needsTransaction(sql: string): boolean {
   const stmt = normalize(sql)
   if (stmt === '') return false
+  // `SELECT 1; INSERT ...` leads with a read but is not one, so a
+  // multi-statement string falls back to the safe answer.
+  if (stmt.includes(';')) return true
   if (!READ_ONLY.test(stmt)) return true
 
   const explain = /^EXPLAIN\b/i.exec(stmt)
