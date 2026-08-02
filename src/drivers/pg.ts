@@ -134,23 +134,93 @@ export function hasBegun(client: ClientLike): boolean {
 }
 
 /**
- * Roll back the test transaction on one client, using the *unpatched* query so
- * the statement is not itself rewritten. Awaited by `afterEach` (SPEC §3.8).
+ * The backend's own view of this connection: `'I'` idle, `'T'` inside a
+ * transaction, `'E'` inside a failed one, `null` before the first query. pg
+ * refreshes it from every ReadyForQuery message, so it is the ground truth.
  *
- * A failure here is logged unconditionally rather than thrown: it usually
- * means the connection is already gone, and turning that into a test failure
- * would hide the real one. Silence, though, would make it undiagnosable.
+ * Undefined when the driver does not expose it — older `pg`, or `pg-native`.
  */
-export async function rollbackClient(client: ClientLike): Promise<void> {
-  if (!hasBegun(client)) return
+export function transactionStatus(client: ClientLike): 'I' | 'T' | 'E' | null | undefined {
+  const candidate = (client as { getTransactionStatus?: unknown }).getTransactionStatus
+  if (typeof candidate !== 'function') return undefined
+  try {
+    return (candidate as () => 'I' | 'T' | 'E' | null).call(client)
+  } catch (err) {
+    log('getTransactionStatus threw:', err)
+    return undefined
+  }
+}
+
+/**
+ * Verify, from the backend rather than from our own bookkeeping, that a client
+ * dbtx opened a transaction on is still inside it.
+ *
+ * `'I'` means something committed the outer transaction — a transaction-control
+ * statement dbtx failed to recognise, most likely. That is the silent
+ * corruption this whole library exists to prevent, so it is reported rather
+ * than swallowed. Returns an error instead of throwing so the caller can still
+ * finish cleaning up.
+ */
+export function isolationBreach(client: ClientLike): Error | undefined {
+  if (!hasBegun(client)) return undefined
+  const status = transactionStatus(client)
+  if (status === undefined || status === 'T' || status === 'E') return undefined
+  return new Error(
+    `dbtx: this connection is no longer inside the test transaction (backend status ` +
+      `${JSON.stringify(status)}). Something committed or ended it — usually a ` +
+      'transaction-control statement dbtx did not recognise. Anything this test wrote ' +
+      'has been left in the database.',
+  )
+}
+
+/** Thrown when a rollback does not come back — a dead connection, usually. */
+export class DbtxRollbackTimeoutError extends Error {
+  constructor(ms: number) {
+    super(
+      `dbtx: ROLLBACK did not complete within ${ms}ms. The connection is probably gone; ` +
+        'the test transaction could not be undone and later tests may see its rows.',
+    )
+    this.name = 'DbtxRollbackTimeoutError'
+  }
+}
+
+/**
+ * Roll back the test transaction on one client, using the *unpatched* query so
+ * the statement is not itself rewritten. Fully awaited by `afterEach`, since a
+ * fire-and-forget rollback is the root of the flakiness we are avoiding
+ * (SPEC §3.8) — but never unbounded: a dead connection would otherwise hang
+ * the whole run.
+ *
+ * Failures are logged unconditionally and returned rather than thrown, so the
+ * caller can roll back the remaining clients before deciding what to do.
+ */
+export async function rollbackClient(
+  client: ClientLike,
+  options: { timeoutMs?: number } = {},
+): Promise<Error | undefined> {
+  if (!hasBegun(client)) return undefined
+  const timeoutMs = options.timeoutMs ?? 10_000
   const target = client as PgClient
   const query = (getFlag(target, ORIGINAL_QUERY) as QueryFn | undefined) ?? target.query
+
+  let timer: NodeJS.Timeout | undefined
   try {
-    await query.call(target, 'ROLLBACK')
+    await Promise.race([
+      Promise.resolve(query.call(target, 'ROLLBACK')),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new DbtxRollbackTimeoutError(timeoutMs))
+        }, timeoutMs)
+        timer.unref?.()
+      }),
+    ])
     log('rolled back the test transaction')
+    return undefined
   } catch (err) {
     warn('ROLLBACK failed; this connection may be left dirty:', err)
+    return err instanceof Error ? err : new Error(String(err))
   } finally {
+    if (timer !== undefined) clearTimeout(timer)
     clearFlag(target, BEGUN)
   }
 }

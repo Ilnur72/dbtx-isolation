@@ -2,16 +2,19 @@ import { log } from '../core/log.js'
 import { isPatched, patchPg, unpatchPg, type PgModuleLike } from './pg.js'
 
 export {
+  DbtxRollbackTimeoutError,
   EXEMPT,
   exempt,
   hasBegun,
   isExempt,
+  isolationBreach,
   isPatched,
   patchPg,
   type PgClientInstance,
   pinnedClients,
   releasePins,
   rollbackClient,
+  transactionStatus,
   unexempt,
   unpatchPg,
   type PgClient,

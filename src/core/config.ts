@@ -14,6 +14,13 @@ export const PREFIX_PATTERN = /^[a-z_][a-z0-9_]{0,20}$/
 export const MAX_IDENTIFIER_BYTES = 63
 
 /**
+ * Mixed into the template fingerprint. Bump it whenever a dbtx change alters
+ * what ends up inside a template, so cached templates from older versions are
+ * rebuilt rather than reused.
+ */
+export const TEMPLATE_EPOCH = 'dbtx@0.1.0'
+
+/**
  * Worst case widths for the parts appended to a prefix, used to prove at
  * config time that no identifier can outgrow the limit later in the run:
  * `<prefix>_<poolId>_<counter>_sp_<depth>`.
@@ -51,15 +58,43 @@ export function assertIdentifierFits(identifier: string): string {
   return identifier
 }
 
+/**
+ * Migration bookkeeping tables, which the `database` strategy must never
+ * truncate: an ORM that finds them empty concludes no migration has ever run
+ * (SPEC §5). `%` is a wildcard.
+ */
+export const DEFAULT_EXCLUDED_TABLES: readonly string[] = [
+  '_prisma%',
+  '__drizzle_migrations',
+  'drizzle.%',
+  'knex_migrations',
+  'knex_migrations_lock',
+  'migrations',
+  'mikro_orm_migrations',
+  'typeorm_metadata',
+  'typeorm_migrations',
+  'schema_migrations',
+  'sequelizemeta',
+]
+
 /** Apply defaults and validate. The single place a prefix is checked. */
 export function resolveConfig(config: DbtxConfig): ResolvedConfig {
   const prefix = config.prefix ?? DEFAULT_PREFIX
   assertValidPrefix(prefix)
+  if (config.cacheTemplate !== undefined && config.cacheTemplate.files.length === 0) {
+    throw new Error(
+      'dbtx: cacheTemplate.files cannot be empty. Without files to hash there is no ' +
+        'honest way to tell whether the cached template is stale, so leave cacheTemplate ' +
+        'off and the template will be rebuilt each run.',
+    )
+  }
   return {
     ...config,
     strategy: config.strategy ?? 'transaction',
     resetSequences: config.resetSequences ?? false,
     strict: config.strict ?? false,
+    excludeTables: config.excludeTables ?? [],
+    keepDatabases: config.keepDatabases ?? false,
     prefix,
   }
 }

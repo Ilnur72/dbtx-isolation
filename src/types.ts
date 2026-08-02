@@ -42,6 +42,36 @@ export interface DbtxConfig {
    * Must match `PREFIX_PATTERN` in `core/config.ts`. Defaults to `'dbtx'`.
    */
   prefix?: string
+  /**
+   * Database to run administrative statements on. Never the target database:
+   * you cannot drop a database you are connected to. Tried in order:
+   * `postgres`, your own database, `template1`.
+   */
+  maintenanceDatabase?: string
+  /**
+   * Reuse the template database between runs instead of rebuilding it.
+   *
+   * Off by default, and deliberately so: the only honest cache key is the
+   * content of the files that define your schema. Keying off the `migrate`
+   * command string would look like it worked while serving a stale schema,
+   * because that string does not change when a migration is added.
+   *
+   * `files` are globs relative to the project root — for example
+   * `['prisma/migrations/**\/*.sql']`. The template is rebuilt whenever their
+   * contents, the `migrate`/`seed` commands, or the dbtx version change.
+   */
+  cacheTemplate?: { files: string[] }
+  /**
+   * Tables the `database` strategy must not truncate, on top of the built-in
+   * migration bookkeeping tables. Names may be bare or schema-qualified, and
+   * may use `%` as a wildcard.
+   */
+  excludeTables?: string[]
+  /**
+   * Keep the databases dbtx creates instead of dropping them at the end of the
+   * run, so a failure can be inspected. Off by default.
+   */
+  keepDatabases?: boolean
 }
 
 /** `DbtxConfig` once defaults have been applied and validation has run. */
@@ -50,6 +80,8 @@ export interface ResolvedConfig extends DbtxConfig {
   resetSequences: boolean
   strict: boolean
   prefix: string
+  excludeTables: string[]
+  keepDatabases: boolean
 }
 
 /** Whatever `globalSetup` produced, handed back to `globalTeardown` and to
@@ -57,6 +89,12 @@ export interface ResolvedConfig extends DbtxConfig {
 export interface GlobalData {
   /** Name of the template database created for this run, if any. */
   template?: string
+  /**
+   * Fingerprint of everything that decides the template's contents. Computed
+   * once in `globalSetup` and handed to the workers so each derives the same
+   * database names without hashing the migration files again.
+   */
+  fingerprint?: string
   /** The URL the run was configured with. */
   url: string
 }

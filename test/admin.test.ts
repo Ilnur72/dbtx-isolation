@@ -1,7 +1,13 @@
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   assertSafeToDrop,
+  computeFingerprint,
   databaseNameFromUrl,
+  expandGlobs,
+  globToRegExp,
   likePatternFor,
   quoteIdent,
   templateName,
@@ -46,34 +52,100 @@ describe('connection strings', () => {
 })
 
 describe('generated names', () => {
-  const base = { url: APP_URL, prefix: 'dbtx', migrate: 'npx prisma migrate deploy' }
+  const HASH = 'abc12345'
 
-  it('are stable for the same configuration', () => {
-    expect(templateName(base)).toBe(templateName({ ...base }))
-    expect(templateName(base)).toMatch(/^dbtx_tpl_[0-9a-f]{8}$/)
+  it('are shaped for the template and for each worker', () => {
+    expect(templateName('dbtx', HASH)).toBe('dbtx_tpl_abc12345')
+    expect(workerDatabaseName('dbtx', HASH, 1)).toBe('dbtx_w1_abc12345')
+    expect(workerDatabaseName('dbtx', HASH, 1)).not.toBe(workerDatabaseName('dbtx', HASH, 2))
   })
 
-  it('change when the migrations or the target database change', () => {
-    expect(templateName(base)).not.toBe(templateName({ ...base, migrate: 'other' }))
-    expect(templateName(base)).not.toBe(
-      templateName({ ...base, url: 'postgres://user:pw@localhost:5432/otherapp' }),
-    )
-  })
-
-  it('give each worker its own database', () => {
-    const one = workerDatabaseName({ ...base, poolId: 1 })
-    const two = workerDatabaseName({ ...base, poolId: 2 })
-    expect(one).toMatch(/^dbtx_w1_[0-9a-f]{8}$/)
-    expect(one).not.toBe(two)
-  })
-
-  it('stay inside the Postgres identifier limit even at the longest prefix', () => {
+  it('stay inside the Postgres identifier limit at the longest prefix', () => {
     const prefix = 'a'.repeat(21)
-    expect(Buffer.byteLength(workerDatabaseName({ ...base, prefix, poolId: 9999 }))).toBeLessThanOrEqual(63)
+    expect(Buffer.byteLength(workerDatabaseName(prefix, HASH, 9999))).toBeLessThanOrEqual(63)
   })
 
   it('reject a prefix that is not identifier-safe', () => {
-    expect(() => templateName({ ...base, prefix: 'My-App' })).toThrow(/invalid prefix/)
+    expect(() => templateName('My-App', HASH)).toThrow(/invalid prefix/)
+  })
+})
+
+describe('computeFingerprint', () => {
+  const base = { url: APP_URL, migrate: 'npx prisma migrate deploy' }
+
+  it('is stable for the same configuration', async () => {
+    expect(await computeFingerprint(base)).toBe(await computeFingerprint({ ...base }))
+    expect(await computeFingerprint(base)).toMatch(/^[0-9a-f]{8}$/)
+  })
+
+  it('changes with the target database, the commands, or the dbtx version', async () => {
+    expect(await computeFingerprint(base)).not.toBe(
+      await computeFingerprint({ ...base, migrate: 'other' }),
+    )
+    expect(await computeFingerprint(base)).not.toBe(
+      await computeFingerprint({ ...base, seed: 'tsx test/seed.ts' }),
+    )
+    expect(await computeFingerprint(base)).not.toBe(
+      await computeFingerprint({ ...base, url: 'postgres://user:pw@localhost:5432/otherapp' }),
+    )
+  })
+
+  it('follows file contents when caching is on, which the command string cannot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dbtx-fp-'))
+    await mkdir(join(root, 'migrations'), { recursive: true })
+    await writeFile(join(root, 'migrations', '001_init.sql'), 'CREATE TABLE a (id int);')
+
+    const cached = { ...base, cacheTemplate: { files: ['migrations/**/*.sql'] }, root }
+    const before = await computeFingerprint(cached)
+
+    // The command has not changed — only the migrations have. This is exactly
+    // the case that makes a command-keyed cache serve a stale schema.
+    await writeFile(join(root, 'migrations', '002_more.sql'), 'CREATE TABLE b (id int);')
+    const after = await computeFingerprint(cached)
+
+    expect(after).not.toBe(before)
+    expect(await computeFingerprint(cached)).toBe(after)
+  })
+
+  it('refuses to cache against a pattern that matches nothing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dbtx-fp-'))
+    await expect(
+      computeFingerprint({ ...base, cacheTemplate: { files: ['migrations/**/*.sql'] }, root }),
+    ).rejects.toThrow(/matched no files/)
+  })
+})
+
+describe('globs', () => {
+  it('translates the patterns people actually write', () => {
+    expect(globToRegExp('migrations/**/*.sql').test('migrations/001.sql')).toBe(true)
+    expect(globToRegExp('migrations/**/*.sql').test('migrations/a/b/001.sql')).toBe(true)
+    expect(globToRegExp('migrations/**/*.sql').test('migrations/001.ts')).toBe(false)
+    expect(globToRegExp('*.sql').test('a/b.sql')).toBe(false)
+    expect(globToRegExp('prisma/schema.prisma').test('prisma/schema.prisma')).toBe(true)
+    expect(globToRegExp('db/?.sql').test('db/1.sql')).toBe(true)
+  })
+
+  it('does not treat dots as wildcards', () => {
+    expect(globToRegExp('a.sql').test('axsql')).toBe(false)
+  })
+
+  it('walks a directory tree, skipping node_modules', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dbtx-glob-'))
+    await mkdir(join(root, 'migrations', 'nested'), { recursive: true })
+    await mkdir(join(root, 'node_modules', 'x'), { recursive: true })
+    await writeFile(join(root, 'migrations', 'a.sql'), '')
+    await writeFile(join(root, 'migrations', 'nested', 'b.sql'), '')
+    await writeFile(join(root, 'migrations', 'c.txt'), '')
+    await writeFile(join(root, 'node_modules', 'x', 'd.sql'), '')
+
+    expect(await expandGlobs(['migrations/**/*.sql'], root)).toEqual([
+      'migrations/a.sql',
+      'migrations/nested/b.sql',
+    ])
+    expect(await expandGlobs(['**/*.sql'], root)).toEqual([
+      'migrations/a.sql',
+      'migrations/nested/b.sql',
+    ])
   })
 })
 

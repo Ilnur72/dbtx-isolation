@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { newCtx, setAmbient, type TestCtx } from '../src/core/context.js'
 import {
+  DbtxRollbackTimeoutError,
   exempt,
   hasBegun,
   isPatched,
@@ -299,9 +300,24 @@ describe('rollbackClient', () => {
     ;(c as unknown as Record<symbol, unknown>)[Symbol.for('dbtx.begun')] = true
     vi.spyOn(c, 'query').mockRejectedValue(new Error('connection terminated'))
 
-    await expect(rollbackClient(c)).resolves.toBeUndefined()
+    // Returned, not thrown: the caller still has other clients to roll back.
+    await expect(rollbackClient(c)).resolves.toBeInstanceOf(Error)
     expect(String(spy.mock.calls[0])).toMatch(/ROLLBACK failed/)
     expect(hasBegun(c)).toBe(false)
+
+    patchPg(pg)
+  })
+
+  it('gives up on a rollback that never answers, rather than hanging the run', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    unpatchPg(pg)
+    const c = client()
+    ;(c as unknown as Record<symbol, unknown>)[Symbol.for('dbtx.begun')] = true
+    vi.spyOn(c, 'query').mockReturnValue(new Promise(() => {}))
+
+    const failure = await rollbackClient(c, { timeoutMs: 20 })
+    expect(failure).toBeInstanceOf(DbtxRollbackTimeoutError)
+    expect(String(failure)).toMatch(/later tests may see its rows/)
 
     patchPg(pg)
   })
