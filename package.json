@@ -49,10 +49,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts",
-    "test:unit": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts",
+    "test": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts test/api.test.ts",
+    "test:unit": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts test/api.test.ts",
     "test:integration": "vitest run test/isolation.test.ts test/database.test.ts",
-    "test:all": "vitest run"
+    "test:all": "vitest run",
+    "test:runner": "vitest run --root test/fixture --no-file-parallelism"
   },
   "peerDependencies": {
     "pg": ">=8.7.0",
