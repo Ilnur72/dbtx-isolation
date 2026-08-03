@@ -200,7 +200,10 @@ Unit tests (no database required) for `rewrite`:
 Integration tests (real Postgres):
 
 8. a row inserted in test A is not visible in test B.
-9. with `resetSequences`, the first inserted row has `id = 1` in every test.
+9. with `resetSequences`, and each worker on its own database, the first
+   inserted row has `id = 1` in every test. Sequences are neither
+   transactional nor per-session, so this cannot hold when several workers
+   share one database; dbtx refuses that combination.
 10. an ORM-style `BEGIN` … `COMMIT` inside a test is visible within that test
     and gone afterwards.
 11. a nested `BEGIN` … `ROLLBACK` discards only the inner work.

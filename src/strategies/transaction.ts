@@ -57,7 +57,7 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
   return {
     name: 'transaction',
 
-    async setup(worker: WorkerContext): Promise<void> {
+    async setup(_worker: WorkerContext): Promise<void> {
       const patched = await patchDetectedDrivers()
       if (patched.length === 0) {
         throw new Error(
@@ -66,7 +66,8 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
         )
       }
       if (config.resetSequences) {
-        assertSequencesCanBeReset(worker)
+        // Whether this is even possible is decided from the Vitest config, in
+        // the plugin; see assertSequenceResetIsPossible.
         maintenance = await openMaintenance(config.url, databaseNameFromUrl(config.url))
       }
     },
@@ -150,30 +151,4 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
       await unpatchDetectedDrivers()
     },
   }
-}
-
-/**
- * `resetSequences` cannot hold under this strategy once more than one worker
- * is running.
- *
- * Every worker shares the one database here — the transaction strategy creates
- * none of its own — and a sequence is neither transactional nor per-session.
- * So one worker setting a sequence back to 1 lands in the middle of another
- * worker's test, and both get ids they did not expect. The guarantee is not
- * weakened by parallelism, it is gone, so this refuses rather than producing
- * an id that is right most of the time.
- *
- * `VITEST_POOL_ID` above 1 is proof that a second worker exists; with a single
- * worker it is always 1 and nothing is raised (SPEC §3.5).
- */
-function assertSequencesCanBeReset(worker: WorkerContext): void {
-  if (worker.poolId <= 1) return
-  throw new Error(
-    "dbtx: resetSequences cannot work with strategy: 'transaction' across several workers. " +
-      'Every worker shares one database, and sequences are not transactional, so a reset in ' +
-      "one worker changes the ids another worker is about to get.\nEither give each worker " +
-      "its own database with strategy: 'database', or run the files one at a time " +
-      '(`fileParallelism: false`, or `poolOptions: { forks: { singleFork: true } }`), or turn ' +
-      'resetSequences off.',
-  )
 }

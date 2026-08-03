@@ -1,0 +1,29 @@
+// Only for dbtx's own smoke test: proves that Prisma 7, which reaches the
+// database through a driver adapter over plain `pg`, is isolated by dbtx
+// without knowing anything about dbtx.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma-dbtx/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id    Int     @id @default(autoincrement())
+  name  String  @unique
+  orders Order[]
+
+  @@map("users")
+}
+
+model Order {
+  id     Int   @id @default(autoincrement())
+  userId Int   @map("user_id")
+  total  Decimal @db.Decimal(10, 2) @default(0)
+  user   User  @relation(fields: [userId], references: [id])
+
+  @@map("orders")
+}

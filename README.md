@@ -9,11 +9,11 @@ MikroORM and raw SQL — because it hooks the **database driver**, not the ORM.
 
 **v0.1 targets PostgreSQL with the `pg` driver and Vitest.**
 
-> **What is actually verified.** dbtx's own test suite exercises `pg` directly
-> and through the Vitest plugin, against PostgreSQL 14 and 18. Support for the
-> ORMs above follows from all of them running on `pg` — it is the design, not
-> a tested claim, and v0.1 ships no ORM-specific test suite. If you hit a case
-> where an ORM confuses it, that is a bug worth reporting.
+> **What is actually verified.** dbtx's own suite exercises `pg` directly,
+> through the Vitest plugin, and through **Prisma 7 and Drizzle**, against
+> PostgreSQL 14 and 18. The other ORMs on that list are untested in v0.1;
+> support for them follows from the same mechanism — they all issue their
+> statements through `pg` — but it is reasoning, not a test result.
 
 ## Setup
 
@@ -75,6 +75,25 @@ Without it, dbtx compares the path it resolves `pg` to against the path your
 project resolves. If they differ it fails immediately. If it cannot tell — no
 `pg` resolvable from your project root, a bundled setup — it warns, and
 `strict: true` turns that warning into an error.
+
+### Prisma
+
+Prisma 7 reaches Postgres through a driver adapter over plain `pg`, so dbtx
+isolates it with no Prisma-specific code on either side — including
+`prisma.$transaction`, which becomes a savepoint inside the test transaction.
+
+One thing is worth knowing. `new PrismaPg({ connectionString })` builds a pool
+of Prisma's own, which under dbtx means a second pinned session that cannot see
+uncommitted rows written through your application's pool. Hand it your pool
+instead and everything shares one connection and one transaction:
+
+```ts
+import { PrismaPg } from '@prisma/adapter-pg'
+import { PrismaClient } from '@prisma/client'
+import { pool } from './db' // your application's pg Pool
+
+export const prisma = new PrismaClient({ adapter: new PrismaPg(pool) })
+```
 
 ## How it works
 

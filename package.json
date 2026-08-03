@@ -51,9 +51,10 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts test/api.test.ts",
     "test:unit": "vitest run test/rewrite.test.ts test/driver.test.ts test/admin.test.ts test/strategy.test.ts test/api.test.ts",
-    "test:integration": "vitest run test/isolation.test.ts test/database.test.ts",
+    "test:integration": "vitest run --no-file-parallelism test/isolation.test.ts test/database.test.ts test/orm.test.ts",
     "test:all": "vitest run",
-    "test:runner": "vitest run --root test/fixture --no-file-parallelism"
+    "test:runner": "vitest run --root test/fixture --no-file-parallelism",
+    "prisma:generate": "prisma generate"
   },
   "peerDependencies": {
     "pg": ">=8.7.0",
@@ -68,9 +69,13 @@
     }
   },
   "devDependencies": {
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
     "@types/node": "^24.3.0",
     "@types/pg": "^8.15.5",
+    "drizzle-orm": "^0.45.2",
     "pg": "^8.16.3",
+    "prisma": "^7.9.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

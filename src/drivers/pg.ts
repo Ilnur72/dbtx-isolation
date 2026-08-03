@@ -499,8 +499,20 @@ export function patchPg(pg: PgModuleLike): boolean {
     if (pin === undefined) return originalEnd.apply(this, args)
 
     // A pinned connection is checked out, so end() would wait for it forever.
-    // Give it back first (SPEC §3.3).
-    const finish = unpin(pin).then(() => originalEnd.apply(this, args))
+    // Give it back first (SPEC §3.3) — and roll its transaction back before
+    // that, while the connection still exists. Ending the pool destroys it and
+    // the server rolls back anyway; doing it here keeps the bookkeeping honest
+    // and stops afterEach from reporting a failed ROLLBACK on a dead
+    // connection. An ORM that disconnects mid-test, as Prisma's $disconnect()
+    // does, takes this path.
+    const finish = (async () => {
+      const client = pin.holder.client
+      if (client !== undefined && hasBegun(client)) {
+        await rollbackClient(client)
+      }
+      await unpin(pin)
+      return originalEnd.apply(this, args)
+    })()
 
     const callback = typeof args[0] === 'function' ? (args[0] as (err?: unknown) => void) : undefined
     if (callback !== undefined) {

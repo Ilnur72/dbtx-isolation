@@ -125,4 +125,34 @@ describe('the vitest plugin', () => {
   it('validates the config in the config file, where the mistake is', () => {
     expect(() => plugin({ url: 'postgres://x/y', prefix: 'Not Valid' })).toThrow(/invalid prefix/)
   })
+
+  describe('resetSequences under a parallel run', () => {
+    const withReset = { url: 'postgres://x/y', resetSequences: true } as const
+
+    it('is refused, from the config rather than from a worker count', () => {
+      // Deliberately not "how many workers do I see": one test file starts one
+      // worker whatever maxWorkers says, so an observed count would pass today
+      // and break silently when a second file is added.
+      expect(() => plugin(withReset).config({})).toThrow(/unless the run is serial/)
+      expect(() => plugin(withReset).config()).toThrow(/unless the run is serial/)
+      expect(() => plugin(withReset).config({ test: { maxWorkers: 4 } })).toThrow(
+        /unless the run is serial/,
+      )
+    })
+
+    it('is allowed when the config says the run is serial', () => {
+      for (const test of [
+        { fileParallelism: false },
+        { maxWorkers: 1 },
+        { poolOptions: { forks: { singleFork: true } } },
+        { poolOptions: { threads: { singleThread: true } } },
+      ]) {
+        expect(() => plugin(withReset).config({ test }), JSON.stringify(test)).not.toThrow()
+      }
+    })
+
+    it('does not apply to the database strategy, where each worker has its own', () => {
+      expect(() => plugin({ ...withReset, strategy: 'database' }).config({})).not.toThrow()
+    })
+  })
 })

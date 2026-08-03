@@ -15,6 +15,18 @@ declare module 'vitest' {
   }
 }
 
+/** The parts of the user's Vitest config this plugin reads. */
+export interface UserConfigLike {
+  test?: {
+    fileParallelism?: boolean
+    maxWorkers?: number | string
+    poolOptions?: {
+      forks?: { singleFork?: boolean }
+      threads?: { singleThread?: boolean }
+    }
+  }
+}
+
 /**
  * The shape Vite needs from a plugin. Declared structurally so this package
  * does not depend on `vite`'s types; `vitest` is an optional peer dependency
@@ -22,7 +34,7 @@ declare module 'vitest' {
  */
 export interface DbtxPlugin {
   name: string
-  config(): {
+  config(userConfig?: UserConfigLike): {
     test: {
       globalSetup: string[]
       setupFiles: string[]
@@ -59,7 +71,8 @@ export function dbtx(config: DbtxConfig): DbtxPlugin {
 
   return {
     name: 'dbtx',
-    config() {
+    config(userConfig?: UserConfigLike) {
+      assertSequenceResetIsPossible(resolved, userConfig)
       return {
         test: {
           globalSetup: [here('./vitest-global-setup.js')],
@@ -69,6 +82,50 @@ export function dbtx(config: DbtxConfig): DbtxPlugin {
       }
     },
   }
+}
+
+/**
+ * `resetSequences` cannot hold under `transaction` once more than one worker
+ * runs, because every worker shares the one database that strategy uses and a
+ * sequence is neither transactional nor per-session: one worker's reset lands
+ * inside another worker's test.
+ *
+ * This reads the configuration rather than counting workers at runtime. A
+ * project with a single test file starts a single worker whatever `maxWorkers`
+ * says, so an observed count would pass today and break silently on the day a
+ * second test file is added.
+ */
+function assertSequenceResetIsPossible(
+  config: ResolvedConfig,
+  userConfig: UserConfigLike | undefined,
+): void {
+  if (!config.resetSequences || config.strategy !== 'transaction') return
+
+  const test = userConfig?.test
+  // `vitest --no-file-parallelism` is applied after this hook runs, so the
+  // flag has to be read from the command line or it looks like a parallel run.
+  const serialOnCommandLine =
+    process.argv.includes('--no-file-parallelism') ||
+    process.argv.includes('--fileParallelism=false') ||
+    process.argv.includes('--maxWorkers=1')
+
+  const serial =
+    serialOnCommandLine ||
+    test?.fileParallelism === false ||
+    test?.maxWorkers === 1 ||
+    test?.poolOptions?.forks?.singleFork === true ||
+    test?.poolOptions?.threads?.singleThread === true
+
+  if (serial) return
+
+  throw new Error(
+    "dbtx: resetSequences cannot work with strategy: 'transaction' unless the run is " +
+      'serial. Every worker shares your one database, and sequences are not transactional, ' +
+      "so one worker's reset changes the ids another worker is about to get.\nEither give " +
+      "each worker its own database with strategy: 'database', or run files one at a time " +
+      '(`fileParallelism: false`, `maxWorkers: 1`, or a single fork/thread), or turn ' +
+      'resetSequences off.',
+  )
 }
 
 export default dbtx
