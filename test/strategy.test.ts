@@ -180,23 +180,24 @@ describe('the transaction strategy', () => {
     }
   })
 
-  it('warns once when a test intercepted nothing at all', async () => {
+  it('records that nothing was intercepted, but does not cry wolf about it', async () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const strategy = makeStrategy('transaction', config())
 
     await strategy.beforeEach()
     await strategy.afterEach()
-    await strategy.beforeEach()
-    await strategy.afterEach()
 
-    // Warned at most once per worker; the same cause would repeat every test.
-    expect(spy.mock.calls.length).toBeLessThanOrEqual(1)
+    // Zero statements is only an indirect hint that dbtx patched the wrong
+    // copy of pg, and a test that does not touch the database looks identical.
+    // It stays a debug line; `strict` is wired to the runner's direct check of
+    // the resolved module path instead.
+    expect(spy).not.toHaveBeenCalled()
   })
 
-  it('turns that warning into a failure under strict', async () => {
+  it('stays quiet under strict too, for the same reason', async () => {
     const strategy = makeStrategy('transaction', config({ strict: true }))
     await strategy.beforeEach()
-    await expect(strategy.afterEach()).rejects.toThrow(/without a single database statement/)
+    await expect(strategy.afterEach()).resolves.toBeUndefined()
   })
 
   it('has no run-level hooks: nothing is ever committed', () => {

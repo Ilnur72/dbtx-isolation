@@ -1,6 +1,6 @@
 import { databaseNameFromUrl, openMaintenance, type AdminClient } from '../admin.js'
 import { getAmbient, newCtx, nextCtxId, setAmbient, takeFailures } from '../core/context.js'
-import { log, warn } from '../core/log.js'
+import { log } from '../core/log.js'
 import {
   isolationBreach,
   patchDetectedDrivers,
@@ -12,9 +12,6 @@ import type { ResolvedConfig, Strategy, WorkerContext } from '../types.js'
 
 /** How long a single client's ROLLBACK may take before we give up on it. */
 const ROLLBACK_TIMEOUT_MS = 10_000
-
-/** Warn at most once per worker; the same cause would repeat on every test. */
-let warnedAboutNoInterception = false
 
 function combine(errors: unknown[]): unknown {
   if (errors.length === 1) return errors[0]
@@ -123,7 +120,15 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
         // Only now may the pinned connections go back to their pools.
         await releasePins()
 
-        if (ctx.intercepted === 0) reportNoInterception(config)
+        if (ctx.intercepted === 0) {
+          // Diagnostic only. Zero statements is an *indirect* hint that dbtx
+          // patched a different copy of `pg` than the application imports —
+          // but a test that simply does not touch the database looks exactly
+          // the same, and Vitest can hand a worker nothing but unit tests. The
+          // direct check (comparing the resolved module paths) belongs to the
+          // runner, and that is what `strict` is wired to.
+          log('no statements passed through dbtx in this test')
+        }
       } finally {
         setAmbient(undefined)
       }
@@ -143,22 +148,4 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
       await unpatchDetectedDrivers()
     },
   }
-}
-
-/**
- * A test that ended without dbtx seeing a single statement. Usually the test
- * simply does not touch the database — but it is also exactly what it looks
- * like when dbtx patched a different copy of `pg` than the application
- * imported, and in that case *nothing* is isolated.
- */
-function reportNoInterception(config: ResolvedConfig): void {
-  const message =
-    'dbtx: this test finished without a single database statement passing through dbtx. ' +
-    'If it does not use the database, this is expected. Otherwise dbtx has probably ' +
-    'patched a different copy of `pg` than your application imports — pass it explicitly ' +
-    'to rule that out.'
-  if (config.strict) throw new Error(message)
-  if (warnedAboutNoInterception) return
-  warnedAboutNoInterception = true
-  warn(`${message} (further occurrences in this worker are not repeated)`)
 }

@@ -6,6 +6,7 @@ import {
   assertSafeToDrop,
   computeFingerprint,
   databaseNameFromUrl,
+  dropDatabase,
   expandGlobs,
   globToRegExp,
   likePatternFor,
@@ -210,5 +211,55 @@ describe('likePatternFor', () => {
     expect(like(pattern, 'dbtxXw1_abc')).toBe(false)
     expect(like(pattern, 'dbtx')).toBe(false)
     expect(like(pattern, 'mydbtx_w1')).toBe(false)
+  })
+})
+
+describe('dropDatabase across server versions', () => {
+  /** An AdminClient that records what it was asked and answers plausibly. */
+  function fakeAdmin(version: string) {
+    const sql: string[] = []
+    const client = {
+      async query(text: string): Promise<Array<Record<string, unknown>>> {
+        sql.push(text.replace(/\s+/g, ' ').trim())
+        if (text.includes('server_version_num')) return [{ v: version }]
+        if (text.includes('FROM pg_database')) return [{ '?column?': 1 }]
+        return []
+      },
+      async end(): Promise<void> {},
+    }
+    return { client, sql }
+  }
+
+  it('uses WITH (FORCE) from Postgres 13', async () => {
+    const { client, sql } = fakeAdmin('130000')
+    await dropDatabase(client, 'dbtx_w1_abc', { prefix: 'dbtx', applicationDatabase: 'myapp' })
+    expect(sql).toContain('DROP DATABASE IF EXISTS "dbtx_w1_abc" WITH (FORCE)')
+  })
+
+  it('falls back to a plain DROP below 13, where FORCE does not exist', async () => {
+    const { client, sql } = fakeAdmin('120018')
+    await dropDatabase(client, 'dbtx_w1_abc', { prefix: 'dbtx', applicationDatabase: 'myapp' })
+    expect(sql).toContain('DROP DATABASE IF EXISTS "dbtx_w1_abc"')
+    expect(sql.some((s) => s.includes('WITH (FORCE)'))).toBe(false)
+  })
+
+  it('always clears the template flag and disconnects backends first', async () => {
+    const { client, sql } = fakeAdmin('180000')
+    await dropDatabase(client, 'dbtx_tpl_abc', { prefix: 'dbtx', applicationDatabase: 'myapp' })
+
+    const alter = sql.findIndex((s) => s.includes('IS_TEMPLATE false'))
+    const terminate = sql.findIndex((s) => s.includes('pg_terminate_backend'))
+    const drop = sql.findIndex((s) => s.startsWith('DROP DATABASE'))
+    expect(alter).toBeGreaterThanOrEqual(0)
+    expect(terminate).toBeGreaterThan(alter)
+    expect(drop).toBeGreaterThan(terminate)
+  })
+
+  it('refuses before it asks the server anything', async () => {
+    const { client, sql } = fakeAdmin('180000')
+    await expect(
+      dropDatabase(client, 'myapp', { prefix: 'dbtx', applicationDatabase: 'myapp' }),
+    ).rejects.toThrow(/DATABASE_URL points at/)
+    expect(sql).toEqual([])
   })
 })
