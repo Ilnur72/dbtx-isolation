@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deliberately has no DATABASE_URL and no postgres service: if the unit
+  # suite ever needs a database, this job is where that shows up.
+  unit:
+    name: unit (no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  integration:
+    name: node ${{ matrix.node }} × postgres ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+        postgres: [14, 16, 18]
+
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dbtxtestapp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # The application database. Note the name: it starts with the default
+      # `dbtx` prefix but has no underscore after it, so it doubles as a
+      # regression test for the LIKE escaping in pruneOrphans.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/dbtxtestapp
+      # Makes a missing DATABASE_URL an error instead of a silent skip, so a
+      # green run always means the integration tests actually ran.
+      DBTX_INTEGRATION: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+
+      # The service health check already gates on this, but an explicit wait
+      # keeps a slow container from turning into a mystery connection error.
+      - name: Wait for postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U postgres; then exit 0; fi
+            sleep 2
+          done
+          echo "postgres never became ready" >&2
+          exit 1
+
+      - run: npm run typecheck
+      - run: npm run test:integration

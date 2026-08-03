@@ -173,6 +173,31 @@ export function isolationBreach(client: ClientLike): Error | undefined {
   )
 }
 
+/**
+ * Bound a driver call in time. Both places that use this talk to a connection
+ * that may already be gone, and neither may hang the run.
+ */
+async function withDeadline<T>(
+  work: () => Promise<T>,
+  ms: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(onTimeout())
+        }, ms)
+        timer.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** Postgres: `current transaction is aborted, commands ignored until ...`. */
 const IN_FAILED_TRANSACTION = '25P02'
 
@@ -191,13 +216,30 @@ const IN_FAILED_TRANSACTION = '25P02'
  * `pg` runs a connection's queries in order, so anything the test fired and
  * forgot has finished by the time this resolves.
  */
-export async function checkIsolation(client: ClientLike): Promise<Error | undefined> {
+export async function checkIsolation(
+  client: ClientLike,
+  options: { timeoutMs?: number } = {},
+): Promise<Error | undefined> {
   if (!hasBegun(client)) return undefined
+  const timeoutMs = options.timeoutMs ?? 5_000
   const target = client as PgClient
+  // The unpatched query, always: this probe must never be rewritten and must
+  // never be the statement that triggers a lazy BEGIN.
   const query = (getFlag(target, ORIGINAL_QUERY) as QueryFn | undefined) ?? target.query
 
   try {
-    await query.call(target, 'SELECT 1')
+    // Its own deadline rather than the rollback's. pg runs a connection's
+    // queries in order, so a test that walked away from a half-read Cursor
+    // leaves this probe queued behind it forever.
+    await withDeadline(
+      async () => query.call(target, 'SELECT 1'),
+      timeoutMs,
+      () =>
+        new Error(
+          `dbtx: the connection did not answer within ${timeoutMs}ms, so its transaction ` +
+            'state could not be confirmed. An unfinished Cursor or query stream will do this.',
+        ),
+    )
   } catch (err) {
     if ((err as { code?: string }).code === IN_FAILED_TRANSACTION) {
       // The transaction is aborted, which means we are very much still in it.
@@ -242,24 +284,18 @@ export async function rollbackClient(
   const target = client as PgClient
   const query = (getFlag(target, ORIGINAL_QUERY) as QueryFn | undefined) ?? target.query
 
-  let timer: NodeJS.Timeout | undefined
   try {
-    await Promise.race([
-      Promise.resolve(query.call(target, 'ROLLBACK')),
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(new DbtxRollbackTimeoutError(timeoutMs))
-        }, timeoutMs)
-        timer.unref?.()
-      }),
-    ])
+    await withDeadline(
+      async () => query.call(target, 'ROLLBACK'),
+      timeoutMs,
+      () => new DbtxRollbackTimeoutError(timeoutMs),
+    )
     log('rolled back the test transaction')
     return undefined
   } catch (err) {
     warn('ROLLBACK failed; this connection may be left dirty:', err)
     return err instanceof Error ? err : new Error(String(err))
   } finally {
-    if (timer !== undefined) clearTimeout(timer)
     clearFlag(target, BEGUN)
   }
 }

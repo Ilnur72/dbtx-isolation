@@ -290,6 +290,38 @@ describeIntegration('transaction strategy (real Postgres)', () => {
       await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
     })
 
+    /*
+     * The hang that pinning really does cause, and the reason the caveat in
+     * the README is not just about visibility.
+     *
+     * One pool is one session with one long transaction that stays open for
+     * the whole test. Two pools means two of those. If the first holds a row
+     * lock the second wants, the second waits for a commit that will never
+     * come — in production these transactions are milliseconds long, under
+     * dbtx they last the entire test.
+     */
+    it('lets two pinned sessions wait on each other, since neither ever commits', async () => {
+      await strategy.beforeEach()
+      const { Pool: PgPool } = await pgApi()
+      const second = new PgPool({ connectionString: url() })
+      extraPools.push(second)
+
+      // Committed outside the test, so both sessions can see it.
+      await outsideTest("INSERT INTO users (name) VALUES ('contended')")
+
+      await pool.query("SELECT id FROM users WHERE name = 'contended' FOR UPDATE")
+
+      // Without a timeout of its own, this UPDATE would block until the run
+      // was killed.
+      await second.query("SET statement_timeout = '750ms'")
+      await expect(
+        second.query("UPDATE users SET name = 'moved' WHERE name = 'contended'"),
+      ).rejects.toThrow(/statement timeout|canceling statement/i)
+
+      await strategy.afterEach()
+      await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
+    }, 20_000)
+
     it('ends the pool cleanly even while a connection is pinned', async () => {
       const { Pool: PgPool } = await pgApi()
       const doomed = new PgPool({ connectionString: url() })

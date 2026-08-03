@@ -278,6 +278,21 @@ describeIntegration('database strategy (real Postgres)', () => {
       expect(forced).toContain(busy)
     }, 30_000)
 
+    /*
+     * A live regression test for the LIKE escaping. The application database
+     * here is `dbtxtestapp`: it starts with the default prefix but has no
+     * underscore after it, so the correct pattern `dbtx\_%` misses it while a
+     * naive `dbtx%` would match — and prune would drop the developer's
+     * database.
+     */
+    it('never matches a database that merely starts with the prefix', async () => {
+      const application = databaseNameFromUrl(url())
+      const dropped = await pruneOrphans({ url: url(), prefix: 'dbtx' })
+
+      expect(dropped).not.toContain(application)
+      expect(await databaseExists(application)).toBe(true)
+    })
+
     it('leaves databases that are not ours alone', async () => {
       const application = databaseNameFromUrl(url())
       await admin(async (client) => {
