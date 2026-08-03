@@ -7,6 +7,7 @@ import {
   dropDatabase,
   pruneOrphans,
   quoteIdent,
+  quoteLiteral,
   templateName,
   urlForDatabase,
   withAdmin,
@@ -247,6 +248,66 @@ describeIntegration('database strategy (real Postgres)', () => {
       await strategy.afterEach()
     }, 30_000)
   })
+
+  /*
+   * Without inheriting the application database's locale, the template gets
+   * the *server's* defaults from template0. When those differ, text sorts
+   * differently in tests than in production and nothing says so: `a, B, c`
+   * sorts as `a, B, c` under en_US and `B, a, c` under C.
+   */
+  it('gives the template the application database\'s locale, not the server default', async () => {
+    const serverDefault = (
+      await outsideTest<Array<{ datcollate: string }>>(
+        "SELECT datcollate FROM pg_database WHERE datname = 'template0'",
+        [],
+        urlForDatabase(url(), 'postgres'),
+      )
+    )[0]!.datcollate
+
+    // Something the server has that is not what it would pick by itself. `C`
+    // always exists; when it is already the default, try a UTF-8 locale.
+    const candidates = serverDefault === 'C' ? ['en_US.utf8', 'en_US.UTF-8'] : ['C']
+    const appDatabase = 'dbtxlocaleapp'
+    let chosen: string | undefined
+
+    for (const candidate of candidates) {
+      await forceDrop(appDatabase)
+      try {
+        await admin(async (client) => {
+          await client.query(
+            `CREATE DATABASE ${quoteIdent(appDatabase)} TEMPLATE template0 ` +
+              `LC_COLLATE ${quoteLiteral(candidate)} LC_CTYPE ${quoteLiteral(candidate)}`,
+          )
+        })
+        chosen = candidate
+        break
+      } catch {
+        // Not installed on this server; try the next one.
+      }
+    }
+
+    if (chosen === undefined) {
+      // Nothing to compare against on this server, so there is nothing to prove.
+      return
+    }
+    cleanup.push(appDatabase)
+
+    const appUrl = urlForDatabase(url(), appDatabase)
+    const fingerprint = await computeFingerprint({ url: appUrl })
+    const { name } = await createTemplate({ url: appUrl, prefix: PREFIX, fingerprint })
+    cleanup.push(name)
+
+    const collate = (
+      await outsideTest<Array<{ datcollate: string }>>(
+        'SELECT datcollate FROM pg_database WHERE datname = $1',
+        [name],
+        urlForDatabase(url(), 'postgres'),
+      )
+    )[0]!.datcollate
+
+    expect(collate).toBe(chosen)
+    expect(collate).not.toBe(serverDefault)
+  }, 60_000)
 
   describeIntegration('pruning leftovers', () => {
     it('drops an idle leftover and spares a busy one', async () => {

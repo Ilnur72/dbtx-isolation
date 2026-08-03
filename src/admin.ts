@@ -38,6 +38,11 @@ export function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`
 }
 
+/** Quote a string literal, for the same statements that cannot take parameters. */
+export function quoteLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
 /** The database a connection string points at. */
 export function databaseNameFromUrl(url: string): string {
   const parsed = new URL(url)
@@ -457,6 +462,100 @@ export interface TemplateResult {
   reused: boolean
 }
 
+/** How a database was created: everything that changes what the data means. */
+interface DatabaseLocale {
+  encoding: string
+  collate: string
+  ctype: string
+  /** `c` libc, `i` ICU, `b` builtin. Absent before Postgres 15. */
+  provider?: string
+  /** ICU or builtin locale name, where the server has one. */
+  locale?: string
+}
+
+/**
+ * Read the application database's encoding and locale.
+ *
+ * The catalogue changed across the versions we support: `datlocprovider` and
+ * `daticulocale` arrived in 15, and 17 renamed the latter to `datlocale`. So
+ * the columns are discovered rather than assumed.
+ */
+async function readLocale(admin: AdminClient, database: string): Promise<DatabaseLocale | undefined> {
+  const columns = new Set(
+    (
+      await admin.query(
+        `SELECT attname FROM pg_attribute
+          WHERE attrelid = 'pg_database'::regclass
+            AND NOT attisdropped
+            AND attname IN ('datlocprovider', 'daticulocale', 'datlocale')`,
+      )
+    ).map((row) => String(row['attname'])),
+  )
+
+  const localeColumn = columns.has('datlocale')
+    ? 'datlocale'
+    : columns.has('daticulocale')
+      ? 'daticulocale'
+      : undefined
+
+  const selected = [
+    'pg_encoding_to_char(encoding) AS encoding',
+    'datcollate',
+    'datctype',
+    columns.has('datlocprovider') ? 'datlocprovider' : 'NULL AS datlocprovider',
+    localeColumn === undefined ? 'NULL AS loc' : `${localeColumn} AS loc`,
+  ].join(', ')
+
+  const rows = await admin.query(
+    `SELECT ${selected} FROM pg_database WHERE datname = $1`,
+    [database],
+  )
+  const row = rows[0]
+  if (row === undefined) return undefined
+
+  const provider = row['datlocprovider']
+  const locale = row['loc']
+  return {
+    encoding: String(row['encoding']),
+    collate: String(row['datcollate']),
+    ctype: String(row['datctype']),
+    ...(typeof provider === 'string' && provider !== '' ? { provider } : {}),
+    ...(typeof locale === 'string' && locale !== '' ? { locale } : {}),
+    }
+}
+
+/**
+ * The `CREATE DATABASE` options that reproduce a database's locale.
+ *
+ * Without these the template inherits the *server's* defaults from
+ * `template0`, not the application's. When they differ, text sorts differently
+ * in tests than in production — `ORDER BY` on `a, B, c` gives `a, B, c` under
+ * en_US and `B, a, c` under C — and nothing announces it. Only `template0`
+ * accepts these options, which is the template dbtx clones from anyway.
+ */
+function localeOptions(locale: DatabaseLocale, useLocaleKeyword: boolean): string {
+  const parts = [
+    `ENCODING ${quoteLiteral(locale.encoding)}`,
+    `LC_COLLATE ${quoteLiteral(locale.collate)}`,
+    `LC_CTYPE ${quoteLiteral(locale.ctype)}`,
+  ]
+
+  if (locale.provider === 'i') {
+    parts.push("LOCALE_PROVIDER 'icu'")
+    if (locale.locale !== undefined) {
+      // Postgres 17 renamed ICU_LOCALE to LOCALE.
+      parts.push(`${useLocaleKeyword ? 'LOCALE' : 'ICU_LOCALE'} ${quoteLiteral(locale.locale)}`)
+    }
+  } else if (locale.provider === 'b') {
+    parts.push("LOCALE_PROVIDER 'builtin'")
+    if (locale.locale !== undefined) {
+      parts.push(`BUILTIN_LOCALE ${quoteLiteral(locale.locale)}`)
+    }
+  }
+
+  return parts.join(' ')
+}
+
 /**
  * Whether a template database exists and, if it does, whether it was ever
  * finished.
@@ -476,6 +575,42 @@ async function templateState(
   const row = rows[0]
   if (row === undefined) return 'missing'
   return row['datistemplate'] === true ? 'ready' : 'incomplete'
+}
+
+/**
+ * Create the template from `template0`, carrying over the application
+ * database's encoding and locale so text behaves in tests the way it behaves
+ * in production.
+ *
+ * If the server will not accept those options — an ICU locale the build does
+ * not have, say — the template is still created, but loudly, because sorting
+ * that silently disagrees with production is the failure we are avoiding.
+ */
+async function createFromTemplate0(
+  admin: AdminClient,
+  name: string,
+  applicationDatabase: string,
+): Promise<void> {
+  const locale = await readLocale(admin, applicationDatabase)
+  if (locale === undefined) {
+    await admin.query(`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0`)
+    return
+  }
+
+  const useLocaleKeyword = (await serverVersion(admin)) >= 170000
+  const options = localeOptions(locale, useLocaleKeyword)
+  try {
+    await admin.query(`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0 ${options}`)
+    log('template locale:', options)
+  } catch (err) {
+    warn(
+      `dbtx: could not give the template database the same locale as ${applicationDatabase} ` +
+        `(${options}). Falling back to the server defaults — text may sort differently in ` +
+        'tests than in production.',
+      err,
+    )
+    await admin.query(`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0`)
+  }
 }
 
 /**
@@ -515,7 +650,7 @@ export async function createTemplate(options: TemplateOptions): Promise<Template
       }
 
       log('creating template', name)
-      await admin.query(`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0`)
+      await createFromTemplate0(admin, name, applicationDatabase)
 
       const templateUrl = urlForDatabase(options.url, name)
       if (options.migrate !== undefined) await runCommand(options.migrate, templateUrl)
