@@ -173,6 +173,45 @@ export function isolationBreach(client: ClientLike): Error | undefined {
   )
 }
 
+/** Postgres: `current transaction is aborted, commands ignored until ...`. */
+const IN_FAILED_TRANSACTION = '25P02'
+
+/**
+ * Check isolation only once the connection has caught up with itself.
+ *
+ * `getTransactionStatus()` is updated from the backend's ReadyForQuery
+ * message, but a query's promise settles one message earlier, on
+ * CommandComplete or ErrorResponse — which may arrive in a different socket
+ * read. So immediately after a statement the status can still describe the
+ * *previous* one. Reading it then would both miss real breaches and, worse,
+ * invent one: a write that was never awaited could leave the status at 'I'
+ * from before the lazy BEGIN landed.
+ *
+ * A round trip removes the ambiguity. It also drains the client's queue, since
+ * `pg` runs a connection's queries in order, so anything the test fired and
+ * forgot has finished by the time this resolves.
+ */
+export async function checkIsolation(client: ClientLike): Promise<Error | undefined> {
+  if (!hasBegun(client)) return undefined
+  const target = client as PgClient
+  const query = (getFlag(target, ORIGINAL_QUERY) as QueryFn | undefined) ?? target.query
+
+  try {
+    await query.call(target, 'SELECT 1')
+  } catch (err) {
+    if ((err as { code?: string }).code === IN_FAILED_TRANSACTION) {
+      // The transaction is aborted, which means we are very much still in it.
+      return undefined
+    }
+    // Something else is wrong with this connection; the rollback that follows
+    // will report it properly, and guessing here would only add noise.
+    log('could not settle the connection before checking isolation:', err)
+    return undefined
+  }
+
+  return isolationBreach(target)
+}
+
 /** Thrown when a rollback does not come back — a dead connection, usually. */
 export class DbtxRollbackTimeoutError extends Error {
   constructor(ms: number) {

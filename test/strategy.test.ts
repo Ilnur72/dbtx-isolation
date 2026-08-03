@@ -95,7 +95,15 @@ describe('the transaction strategy', () => {
     await client.query('INSERT INTO users DEFAULT VALUES')
     await strategy.afterEach()
 
-    expect(client.statements).toEqual(['BEGIN', 'INSERT INTO users DEFAULT VALUES', 'ROLLBACK'])
+    // The SELECT 1 is the round trip checkIsolation makes before trusting
+    // getTransactionStatus(), which otherwise lags the last statement by one
+    // protocol message.
+    expect(client.statements).toEqual([
+      'BEGIN',
+      'INSERT INTO users DEFAULT VALUES',
+      'SELECT 1',
+      'ROLLBACK',
+    ])
     expect(client.status).toBe('I')
   })
 

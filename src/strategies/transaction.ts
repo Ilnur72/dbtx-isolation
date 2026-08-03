@@ -2,7 +2,7 @@ import { databaseNameFromUrl, openMaintenance, type AdminClient } from '../admin
 import { getAmbient, newCtx, nextCtxId, setAmbient, takeFailures } from '../core/context.js'
 import { log } from '../core/log.js'
 import {
-  isolationBreach,
+  checkIsolation,
   patchDetectedDrivers,
   releasePins,
   rollbackClient,
@@ -103,9 +103,10 @@ export function createTransactionStrategy(config: ResolvedConfig): Strategy {
         // Ask the backend, not our own bookkeeping, whether the transaction is
         // still open — before rolling back, while the answer still means
         // something. 'I' here means something committed it and the test's rows
-        // are already permanent.
+        // are already permanent. Each check costs one round trip, which is
+        // what makes the answer trustworthy; see checkIsolation.
         for (const client of ctx.clients) {
-          const breach = isolationBreach(client)
+          const breach = await checkIsolation(client)
           if (breach !== undefined) errors.push(breach)
         }
 

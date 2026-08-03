@@ -2,7 +2,7 @@ import type { Pool } from 'pg'
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/core/config.js'
 import { getAmbient, withBypass } from '../src/core/context.js'
-import { hasBegun, pinnedClients, transactionStatus } from '../src/drivers/pg.js'
+import { checkIsolation, hasBegun, pinnedClients, transactionStatus } from '../src/drivers/pg.js'
 import { makeStrategy } from '../src/strategies/index.js'
 import type { Strategy } from '../src/types.js'
 import { applySchema, describeIntegration, outsideTest, pgApi, url, workerContext } from './helpers.js'
@@ -116,7 +116,14 @@ describeIntegration('transaction strategy (real Postgres)', () => {
       await expect(pool.query("INSERT INTO users (name) VALUES ('dup')")).rejects.toThrow(
         /duplicate key/i,
       )
-      expect(pinnedClients().map((c) => transactionStatus(c))).toEqual(['E'])
+
+      // checkIsolation does a round trip first, because the status lags a
+      // rejected query by one protocol message; reading it raw here would see
+      // the stale 'T'. An aborted transaction is still a transaction, so this
+      // is not a breach.
+      const [pinned] = pinnedClients()
+      await expect(checkIsolation(pinned!)).resolves.toBeUndefined()
+      expect(transactionStatus(pinned!)).toBe('E')
     })
 
     it('starts clean after that abort', async () => {
@@ -259,6 +266,51 @@ describeIntegration('transaction strategy (real Postgres)', () => {
     })
   })
 
+  /*
+   * Runs before the sequence-reset block on purpose: that block's teardown
+   * unpatches the driver, which is correct for a worker that owns one strategy
+   * but means anything after it in this file would see an unpatched pg.
+   */
+  describeIntegration('failure reporting', () => {
+    it('reports a transaction that something else committed', async () => {
+      await strategy.beforeEach()
+      await pool.query("INSERT INTO users (name) VALUES ('breach')")
+
+      // Commit it behind dbtx's back. Sent normally, this COMMIT would be
+      // rewritten away at depth 0 — which is the protection working — so the
+      // bypass is what makes it reach the server, exactly as an alias dbtx
+      // failed to recognise would.
+      const [pinned] = pinnedClients()
+      expect(pinned).toBeDefined()
+      await withBypass(async () => {
+        await (pinned as unknown as { query: (sql: string) => Promise<unknown> }).query('COMMIT')
+      })
+
+      await expect(strategy.afterEach()).rejects.toThrow(/no longer inside the test transaction/)
+      await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
+    })
+
+    it('ends the pool cleanly even while a connection is pinned', async () => {
+      const { Pool: PgPool } = await pgApi()
+      const doomed = new PgPool({ connectionString: url() })
+
+      await strategy.beforeEach()
+      await doomed.query("INSERT INTO users (name) VALUES ('ending')")
+      // Would hang forever if end() waited for the pinned connection.
+      await expect(doomed.end()).resolves.toBeUndefined()
+      await strategy.afterEach().catch(() => undefined)
+      await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
+    }, 15_000)
+
+    it('is quiet about rollbacks that succeed', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await strategy.beforeEach()
+      await pool.query("INSERT INTO users (name) VALUES ('quiet')")
+      await strategy.afterEach()
+      expect(spy).not.toHaveBeenCalled()
+      spy.mockRestore()
+    })
+  })
   describeIntegration('sequence resets', () => {
     let resetting: Strategy
 
@@ -292,39 +344,4 @@ describeIntegration('transaction strategy (real Postgres)', () => {
     }
   })
 
-  describeIntegration('failure reporting', () => {
-    it('reports a transaction that something else committed', async () => {
-      await strategy.beforeEach()
-      await pool.query("INSERT INTO users (name) VALUES ('breach')")
-
-      // Commit it behind dbtx's back, exactly as an unrecognised alias would.
-      const [pinned] = pinnedClients()
-      expect(pinned).toBeDefined()
-      await (pinned as unknown as { query: (sql: string) => Promise<unknown> }).query('COMMIT')
-
-      await expect(strategy.afterEach()).rejects.toThrow(/no longer inside the test transaction/)
-      await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
-    })
-
-    it('ends the pool cleanly even while a connection is pinned', async () => {
-      const { Pool: PgPool } = await pgApi()
-      const doomed = new PgPool({ connectionString: url() })
-
-      await strategy.beforeEach()
-      await doomed.query("INSERT INTO users (name) VALUES ('ending')")
-      // Would hang forever if end() waited for the pinned connection.
-      await expect(doomed.end()).resolves.toBeUndefined()
-      await strategy.afterEach().catch(() => undefined)
-      await outsideTest('TRUNCATE orders, users RESTART IDENTITY CASCADE')
-    }, 15_000)
-
-    it('is quiet about rollbacks that succeed', async () => {
-      const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      await strategy.beforeEach()
-      await pool.query("INSERT INTO users (name) VALUES ('quiet')")
-      await strategy.afterEach()
-      expect(spy).not.toHaveBeenCalled()
-      spy.mockRestore()
-    })
-  })
 })

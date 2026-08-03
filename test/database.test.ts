@@ -62,15 +62,28 @@ async function admin<T>(fn: Parameters<typeof withAdmin<T>>[1]): Promise<T> {
   return withAdmin({ url: url() }, fn)
 }
 
+/**
+ * Drop a database the blunt way, for test fixtures only. A sealed template
+ * cannot be dropped while it is still marked as one — which is why the library
+ * itself goes through dropDatabase(), and why this helper has to do the same
+ * two steps by hand.
+ */
+async function forceDrop(name: string): Promise<void> {
+  await admin(async (client) => {
+    await client
+      .query(`ALTER DATABASE ${quoteIdent(name)} WITH IS_TEMPLATE false ALLOW_CONNECTIONS true`)
+      .catch(() => undefined)
+    await client.query(`DROP DATABASE IF EXISTS ${quoteIdent(name)} WITH (FORCE)`)
+  })
+}
+
 describeIntegration('database strategy (real Postgres)', () => {
   const cleanup: string[] = []
 
   afterAll(async () => {
     await pruneOrphans({ url: url(), prefix: PREFIX, includeActive: true })
     for (const name of cleanup) {
-      await admin(async (client) => {
-        await client.query(`DROP DATABASE IF EXISTS ${quoteIdent(name)} WITH (FORCE)`)
-      }).catch(() => undefined)
+      await forceDrop(name).catch(() => undefined)
     }
   })
 
@@ -92,8 +105,8 @@ describeIntegration('database strategy (real Postgres)', () => {
 
     // Wreckage of a run that died between CREATE DATABASE and the sealing
     // ALTER: it exists, it is unsealed, and its schema is incomplete.
+    await forceDrop(name)
     await admin(async (client) => {
-      await client.query(`DROP DATABASE IF EXISTS ${quoteIdent(name)} WITH (FORCE)`)
       await client.query(`CREATE DATABASE ${quoteIdent(name)} TEMPLATE template0`)
     })
     expect((await databaseFlags(name)).istemplate).toBe(false)
@@ -106,11 +119,12 @@ describeIntegration('database strategy (real Postgres)', () => {
       migrate: cfg.migrate,
       cache: true, // even asked to reuse, it must refuse this one
     })
+    const warnings = spy.mock.calls.map((call) => String(call))
     spy.mockRestore()
 
     expect(rebuilt.reused).toBe(false)
     expect(await databaseFlags(name)).toEqual({ istemplate: true, allowconn: false })
-    expect(String(spy.mock.calls[0])).toMatch(/half-built/)
+    expect(warnings.join('\n')).toMatch(/half-built/)
   })
 
   it('gives concurrent workers their own databases', async () => {
@@ -240,12 +254,12 @@ describeIntegration('database strategy (real Postgres)', () => {
       const busy = `${PREFIX}_orphan_busy`
       cleanup.push(idle, busy)
 
-      await admin(async (client) => {
-        for (const name of [idle, busy]) {
-          await client.query(`DROP DATABASE IF EXISTS ${quoteIdent(name)} WITH (FORCE)`)
+      for (const name of [idle, busy]) {
+        await forceDrop(name)
+        await admin(async (client) => {
           await client.query(`CREATE DATABASE ${quoteIdent(name)}`)
-        }
-      })
+        })
+      }
 
       const { Pool: PgPool } = await pgApi()
       const holder = new PgPool({ connectionString: urlForDatabase(url(), busy), max: 1 })

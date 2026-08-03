@@ -2,6 +2,7 @@ import { log } from '../core/log.js'
 import { isPatched, patchPg, unpatchPg, type PgModuleLike } from './pg.js'
 
 export {
+  checkIsolation,
   DbtxRollbackTimeoutError,
   EXEMPT,
   exempt,
