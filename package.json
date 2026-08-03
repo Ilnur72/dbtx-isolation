@@ -78,5 +78,14 @@
     "prisma": "^7.9.1",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
-  }
+  },
+  "author": "Ilnur Umirbayev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ilnur72/dbtx-packet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ilnur72/dbtx-packet/issues"
+  },
+  "homepage": "https://github.com/Ilnur72/dbtx-packet#readme"
 }
