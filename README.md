@@ -1,4 +1,4 @@
-# dbtx
+# dbtx-isolation
 
 ORM-agnostic test database isolation for Node.js. Every test starts against a
 clean database, and you write no `beforeEach`, no test helpers, and no changes
@@ -15,12 +15,21 @@ MikroORM and raw SQL — because it hooks the **database driver**, not the ORM.
 > support for them follows from the same mechanism — they all issue their
 > statements through `pg` — but it is reasoning, not a test result.
 
+## Install
+
+```sh
+npm install --save-dev dbtx-isolation
+```
+
+The package is `dbtx-isolation`; everything it exports — the Vitest plugin and
+the runtime API — is called `dbtx`, and that is the name this document uses.
+
 ## Setup
 
 ```ts
 // vitest.config.ts
 import { defineConfig } from 'vitest/config'
-import { dbtx } from 'dbtx/vitest'
+import { dbtx } from 'dbtx-isolation/vitest'
 
 export default defineConfig({
   plugins: [
@@ -61,7 +70,7 @@ and nothing is isolated:
 ```ts
 // test/dbtx-driver.ts
 import pg from 'pg'
-import { useDriver } from 'dbtx'
+import { useDriver } from 'dbtx-isolation'
 
 useDriver(pg)
 ```
@@ -228,7 +237,7 @@ them.
 ## API
 
 ```ts
-import { dbtx, useDriver } from 'dbtx'
+import { dbtx, useDriver } from 'dbtx-isolation'
 
 await dbtx.uncommitted(async () => {
   // Outside the isolation: this really commits, and cleaning it up is yours.

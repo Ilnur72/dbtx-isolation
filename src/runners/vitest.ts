@@ -54,7 +54,7 @@ function here(file: string): string {
  *
  * ```ts
  * // vitest.config.ts
- * import { dbtx } from 'dbtx/vitest'
+ * import { dbtx } from 'dbtx-isolation/vitest'
  *
  * export default defineConfig({
  *   plugins: [dbtx({ url: process.env.DATABASE_URL! })],

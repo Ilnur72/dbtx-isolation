@@ -1,9 +1,9 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
-import { dbtx } from 'dbtx/vitest'
+import { dbtx } from 'dbtx-isolation/vitest'
 
-// A user's config, exactly as the README shows it: dbtx is imported by
-// package name, so this resolves through package.json `exports` into dist/ —
+// A user's config, exactly as the README shows it: dbtx-isolation is imported
+// by package name, so this resolves through package.json `exports` into dist/ —
 // which means the fixture tests what users actually install, and a broken
 // exports map or a missing build fails here.
 export default defineConfig({
