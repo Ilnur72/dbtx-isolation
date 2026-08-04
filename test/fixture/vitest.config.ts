@@ -1,9 +1,11 @@
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
-import { dbtx } from '../../src/runners/vitest.js'
+import { dbtx } from 'dbtx/vitest'
 
-// A user's config, as the README will show it. The only difference is that it
-// points at the source rather than the published package.
+// A user's config, exactly as the README shows it: dbtx is imported by
+// package name, so this resolves through package.json `exports` into dist/ —
+// which means the fixture tests what users actually install, and a broken
+// exports map or a missing build fails here.
 export default defineConfig({
   plugins: [
     dbtx({

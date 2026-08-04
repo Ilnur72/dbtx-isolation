@@ -82,10 +82,15 @@ Prisma 7 reaches Postgres through a driver adapter over plain `pg`, so dbtx
 isolates it with no Prisma-specific code on either side — including
 `prisma.$transaction`, which becomes a savepoint inside the test transaction.
 
-One thing is worth knowing. `new PrismaPg({ connectionString })` builds a pool
-of Prisma's own, which under dbtx means a second pinned session that cannot see
-uncommitted rows written through your application's pool. Hand it your pool
-instead and everything shares one connection and one transaction:
+> **Do not give the adapter a connection string.** `new PrismaPg({
+> connectionString })` is the form Prisma's own documentation shows, so it is
+> the one most people paste in — and it builds a pool of Prisma's own. Under
+> dbtx that is a second pinned session, which cannot see uncommitted rows
+> written through your application's pool. Your tests then read empty tables
+> for no visible reason.
+
+Hand the adapter your existing pool instead, and everything shares one
+connection and one transaction:
 
 ```ts
 import { PrismaPg } from '@prisma/adapter-pg'

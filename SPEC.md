@@ -244,4 +244,4 @@ Never claim to have solved something we have not.
 ## 10. Out of scope for v0.1
 
 MySQL, SQLite, `postgres.js`, `mysql2`, Jest, `node:test`, MongoDB, RLS/role
-context, seed replay under the `database` strategy. Do not start these.
+context, seed replay under the `database` strategy. Do not start these.`

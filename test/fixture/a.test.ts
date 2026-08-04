@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { dbtx } from '../../src/index.js'
+import { dbtx } from 'dbtx'
 import { countUsers, createUser } from './app/db.js'
 
 // No hooks, no helpers, no imports from dbtx needed for isolation itself.

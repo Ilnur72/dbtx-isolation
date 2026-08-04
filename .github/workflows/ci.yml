@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Build branches too: pushing one and waiting for a run that a `main`-only
+    # filter was never going to start is a good way to lose an afternoon.
+    branches: [main, 'build/**']
   pull_request:
+  # Re-run a matrix leg by hand, without opening a pull request for it.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -77,7 +81,11 @@ jobs:
           echo "postgres never became ready" >&2
           exit 1
 
-      # The ORM smoke tests need a generated Prisma client.
+      # The ORM smoke tests need a generated Prisma client, and the fixture
+      # project imports dbtx by package name — through `exports` into dist/ —
+      # so it needs a build. Each matrix leg is its own runner with no
+      # artifacts from the unit job.
+      - run: npm run build
       - run: npm run prisma:generate
 
       - run: npm run typecheck
