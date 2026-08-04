@@ -26,6 +26,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # typecheck covers test/, and the ORM smoke test refers to the generated
+      # Prisma client, so it has to exist even in the job that never touches a
+      # database.
+      - run: npm run prisma:generate
       - run: npm run typecheck
       - run: npm run build
       - run: npm test
