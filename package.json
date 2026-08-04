@@ -1,5 +1,5 @@
 {
-  "name": "dbtx",
+  "name": "dbtx-isolation",
   "version": "0.1.0",
   "description": "ORM-agnostic test database isolation for Node.js. Every test starts against a clean database, with zero boilerplate.",
   "keywords": [

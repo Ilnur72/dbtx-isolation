@@ -6,7 +6,8 @@
 
 ## 1. What we are building
 
-`dbtx` — an **ORM-agnostic test database isolation library for Node.js**.
+`dbtx` (published on npm as `dbtx-isolation`) — an **ORM-agnostic test database
+isolation library for Node.js**.
 
 Every test starts against a clean database. The developer writes zero
 boilerplate: no `beforeEach`, no test helpers, no changes to application code.
@@ -121,7 +122,7 @@ against `@chax-at`.
 
 ```ts
 // vitest.config.ts
-import { dbtx } from 'dbtx/vitest'
+import { dbtx } from 'dbtx-isolation/vitest'
 
 export default defineConfig({
   plugins: [dbtx({
@@ -135,7 +136,7 @@ export default defineConfig({
 ```
 
 ```ts
-import { dbtx } from 'dbtx'
+import { dbtx } from 'dbtx-isolation'
 
 dbtx.uncommitted(fn)   // escape the isolation (DDL, LISTEN/NOTIFY)
 dbtx.isolated          // boolean

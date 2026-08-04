@@ -53,7 +53,7 @@ let injected: PgModuleLike | undefined
  * ```ts
  * // test/dbtx-driver.ts, listed in setupFiles
  * import pg from 'pg'
- * import { useDriver } from 'dbtx'
+ * import { useDriver } from 'dbtx-isolation'
  * useDriver(pg)
  * ```
  */

@@ -16,7 +16,7 @@ export type {
  * The public API (SPEC §4).
  *
  * ```ts
- * import { dbtx } from 'dbtx'
+ * import { dbtx } from 'dbtx-isolation'
  *
  * await dbtx.uncommitted(async () => {
  *   await pool.query('CREATE TABLE scratch (id int)')  // survives the test

@@ -21,7 +21,7 @@ export default async function setup(project: ProjectLike): Promise<() => Promise
   if (config === undefined) {
     throw new Error(
       'dbtx: the configuration never reached globalSetup. Add the plugin to your vitest ' +
-        "config: `import { dbtx } from 'dbtx/vitest'` and `plugins: [dbtx({ ... })]`.",
+        "config: `import { dbtx } from 'dbtx-isolation/vitest'` and `plugins: [dbtx({ ... })]`.",
     )
   }
 
