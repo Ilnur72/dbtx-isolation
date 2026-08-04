@@ -26,12 +26,13 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # typecheck covers test/, and the ORM smoke test refers to the generated
-      # Prisma client, so it has to exist even in the job that never touches a
-      # database.
+      # Both before typecheck, and both for the same reason: typecheck covers
+      # test/, where the fixture imports dbtx by package name (so it needs
+      # dist/) and the ORM smoke test refers to the generated Prisma client.
+      # Neither is a database step, so this job stays database-free.
+      - run: npm run build
       - run: npm run prisma:generate
       - run: npm run typecheck
-      - run: npm run build
       - run: npm test
 
   integration:
