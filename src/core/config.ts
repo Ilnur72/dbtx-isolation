@@ -18,7 +18,7 @@ export const MAX_IDENTIFIER_BYTES = 63
  * what ends up inside a template, so cached templates from older versions are
  * rebuilt rather than reused.
  */
-export const TEMPLATE_EPOCH = 'dbtx@0.1.0'
+export const TEMPLATE_EPOCH = 'dbtx@0.2.0'
 
 /**
  * Worst case widths for the parts appended to a prefix, used to prove at
