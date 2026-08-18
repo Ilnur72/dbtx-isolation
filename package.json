@@ -1,6 +1,6 @@
 {
   "name": "dbtx-isolation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ORM-agnostic test database isolation for Node.js. Every test starts against a clean database, with zero boilerplate.",
   "keywords": [
     "test",
@@ -82,10 +82,10 @@
   "author": "Ilnur Umirbayev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Ilnur72/dbtx-packet.git"
+    "url": "git+https://github.com/Ilnur72/dbtx-isolation.git"
   },
   "bugs": {
-    "url": "https://github.com/Ilnur72/dbtx-packet/issues"
+    "url": "https://github.com/Ilnur72/dbtx-isolation/issues"
   },
-  "homepage": "https://github.com/Ilnur72/dbtx-packet#readme"
+  "homepage": "https://github.com/Ilnur72/dbtx-isolation#readme"
 }

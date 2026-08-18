@@ -128,7 +128,7 @@ Since Prisma 7 connects through driver adapters (`@prisma/adapter-pg` → plain
 
 | | `transaction` (default) | `database` |
 |---|---|---|
-| How it cleans up | rolls back a savepoint | `TRUNCATE ... RESTART IDENTITY CASCADE` |
+| How it cleans up | rolls back a savepoint | truncates the tables the test wrote to, then restores their seed rows |
 | Speed | fastest | slower — a real database per worker |
 | Commits | never | real |
 | DDL in tests | limited (see below) | yes |
@@ -136,12 +136,32 @@ Since Prisma 7 connects through driver adapters (`@prisma/adapter-pg` → plain
 | Deferred constraints | not checked | checked |
 | `now()` | transaction start time | correct |
 | Several connections | one pinned per pool | unrestricted |
-| Replays your seed | n/a — nothing is lost | **no** (see caveats) |
+| Restores your seed | n/a — nothing is lost | yes |
 
 The `database` strategy builds a template database once per run, applies your
 migrations and seed to it, seals it, and gives each Vitest worker a file-level
 clone (`CREATE DATABASE ... TEMPLATE`), which is far cheaper than re-running
 migrations per worker.
+
+Cleanup is incremental. Building the template also snapshots the seeded rows
+into a `<prefix>_snap` schema and puts a statement-level trigger on every table;
+both are inside the template, so each worker inherits them through the same
+clone and your seed command still runs exactly once. After each test dbtx
+truncates only the tables that test actually wrote to and puts their seed rows
+back — a test that touched two tables does not pay for the other ninety-eight.
+
+On PostgreSQL 16, against a full truncate-and-reseed of the same schema:
+
+| Schema | Full sweep | Only what the test dirtied |
+|---|---|---|
+| 30 tables, 5 seeded × 1k rows | 110.7ms | 10.8ms |
+| 100 tables, 10 seeded × 5k rows | 281.5ms | 28.3ms |
+| 100 tables, 10 seeded × 50k rows | 1843.9ms | 165.9ms |
+| 250 tables, 10 seeded × 5k rows | 357.0ms | 12.1ms |
+
+The trigger costs 0.02–0.16ms per writing statement. Run the numbers on your own
+hardware before trusting them: these came from a container with `fsync=off`, and
+the ratios travel better than the absolute values.
 
 ## When you have to use `strategy: 'database'`
 
@@ -200,11 +220,16 @@ worker's test. dbtx refuses this combination rather than producing an id that
 is right most of the time. Use `strategy: 'database'`, or
 `fileParallelism: false`.
 
-**`database` does not replay your seed.** After the first test, whatever the
-seed inserted is gone — truncation takes it with everything else. Migration
-bookkeeping tables (`_prisma_migrations`, `__drizzle_migrations`,
-`knex_migrations`, `typeorm_metadata`, and friends) are never truncated; add
-your own with `excludeTables`.
+**Migration bookkeeping is never touched.** `_prisma_migrations`,
+`__drizzle_migrations`, `knex_migrations`, `typeorm_metadata` and friends are
+excluded from both the snapshot and the sweep, because an ORM that finds its
+migrations table empty concludes no migration has ever run. Add your own with
+`excludeTables`.
+
+**A test that writes through a raw `COPY` from a file is still covered**, but a
+test that bypasses the server — restoring a physical backup, say — is not: the
+trigger only sees statements Postgres executes. That is not a case any test
+suite hits by accident, and it is the only known hole in the tracking.
 
 **Extensions must be in your migrations.** Templates are cloned from
 `template0`, so anything installed into `template1` by hand is not there. dbtx
