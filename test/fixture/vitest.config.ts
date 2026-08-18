@@ -16,6 +16,7 @@ export default defineConfig({
       // Quoted: `migrate` is a shell command, so a path with spaces in it is
       // the caller's to quote.
       migrate: `node "${fileURLToPath(new URL('../apply-schema.mjs', import.meta.url))}"`,
+      seed: `node "${fileURLToPath(new URL('../apply-seed.mjs', import.meta.url))}"`,
       resetSequences: true,
       prefix: 'dbtxfx',
     }),

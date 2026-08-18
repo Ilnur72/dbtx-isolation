@@ -5,6 +5,7 @@
 
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS countries;
 DROP TABLE IF EXISTS _prisma_migrations;
 
 CREATE TABLE users (
@@ -16,6 +17,15 @@ CREATE TABLE orders (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users (id),
   total numeric(10, 2) NOT NULL DEFAULT 0
+);
+
+-- Reference data, filled by the seed command rather than the migration. Every
+-- test expects to find it and no test creates it, so it is the case a cleanup
+-- that empties every table gets wrong.
+CREATE TABLE countries (
+  id serial PRIMARY KEY,
+  code text NOT NULL UNIQUE,
+  name text NOT NULL
 );
 
 -- Stands in for an ORM's migration bookkeeping. The database strategy must

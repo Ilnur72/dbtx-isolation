@@ -14,6 +14,7 @@ import {
   type AdminClient,
 } from '../admin.js'
 import { DEFAULT_EXCLUDED_TABLES } from '../core/config.js'
+import { installIntoTemplate, namesFor, sweep } from './dirty-tracking.js'
 import { newCtx, nextCtxId, setAmbient } from '../core/context.js'
 import { log, warn } from '../core/log.js'
 import { isPatched, loadPg } from '../drivers/index.js'
@@ -50,23 +51,23 @@ export function makeTableFilter(extra: readonly string[] = []): (
  * connections at once and correct `now()` semantics — because there is no
  * outer transaction to distort any of that.
  *
- * v0.1 does not replay the seed after truncation. Whatever the seed inserted
- * is gone after the first test.
+ * Cleanup is seed-preserving and incremental. A snapshot of the seeded rows is
+ * taken inside the template, statement-level triggers record which tables a
+ * test wrote to, and `afterEach` truncates and restores only those. See
+ * `dirty-tracking.ts` for the mechanism and the measurements.
  */
 export function createDatabaseStrategy(config: ResolvedConfig): Strategy {
   let maintenance: AdminClient | undefined
-  let truncatable: string[] | undefined
   let workerDatabase: string | undefined
 
   const shouldTruncate = makeTableFilter(config.excludeTables)
+  const names = namesFor(config.prefix)
 
   /**
-   * The tables to empty, looked up once per worker. Asking for this on every
-   * test would add a catalogue query to each one.
+   * Every table the strategy is allowed to touch, schema-qualified. Used
+   * against the template when installing, and per worker for logging.
    */
-  async function tables(client: AdminClient): Promise<string[]> {
-    if (truncatable !== undefined) return truncatable
-
+  async function listTables(client: AdminClient): Promise<string[]> {
     const rows = await client.query(
       `SELECT n.nspname AS schema,
               c.relname AS name,
@@ -90,10 +91,9 @@ export function createDatabaseStrategy(config: ResolvedConfig): Strategy {
       else skipped.push(qualified)
     }
 
-    truncatable = kept
-    log(`truncating ${kept.length} table(s); leaving ${skipped.length} alone`)
+    log(`tracking ${kept.length} table(s); leaving ${skipped.length} alone`)
     if (skipped.length > 0) log('excluded:', skipped.join(', '))
-    return truncatable
+    return kept
   }
 
   function fingerprintOf(worker: WorkerContext): string {
@@ -133,6 +133,13 @@ export function createDatabaseStrategy(config: ResolvedConfig): Strategy {
         seed: config.seed,
         cache: config.cacheTemplate !== undefined,
         maintenanceDatabase: config.maintenanceDatabase,
+        // Runs against the template, so every worker inherits the snapshot and
+        // the triggers through `CREATE DATABASE ... TEMPLATE` at no extra cost.
+        // The same filter the sweep uses decides what is in scope, so an ORM's
+        // migration bookkeeping is excluded from both.
+        prepare: async (client) => {
+          await installIntoTemplate(client, await listTables(client), names)
+        },
       })
       log(reused ? 'reused template' : 'built template', name)
 
@@ -214,11 +221,16 @@ export function createDatabaseStrategy(config: ResolvedConfig): Strategy {
     async afterEach(): Promise<void> {
       try {
         if (maintenance === undefined) return
-        const names = await tables(maintenance)
-        if (names.length === 0) return
-        // One statement: TRUNCATE takes every table at once, and RESTART
-        // IDENTITY resets their sequences in the same breath.
-        await maintenance.query(`TRUNCATE ${names.join(', ')} RESTART IDENTITY CASCADE`)
+        // Only what this test wrote to, and the seed goes back afterwards.
+        // A test that wrote nothing costs one SELECT.
+        const cleaned = await sweep(maintenance, names)
+        if (config.strict && cleaned.length === 0) {
+          warn(
+            'dbtx: this test wrote to no table at all. Under strict mode that is reported ' +
+              'because it usually means the application is talking to a different database ' +
+              'than the one dbtx prepared for this worker.',
+          )
+        }
       } finally {
         setAmbient(undefined)
       }
@@ -231,7 +243,6 @@ export function createDatabaseStrategy(config: ResolvedConfig): Strategy {
         })
         maintenance = undefined
       }
-      truncatable = undefined
 
       if (workerDatabase === undefined || config.keepDatabases) return
       const database = workerDatabase

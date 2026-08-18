@@ -454,6 +454,17 @@ export interface TemplateOptions extends AdminOptions {
   seed?: string
   /** Reuse a finished template instead of rebuilding it. Off by default. */
   cache?: boolean
+  /**
+   * Last chance to change the template, called with a connection to it after
+   * `migrate` and `seed` have run and before it is sealed.
+   *
+   * A callback rather than something admin.ts does itself, because what needs
+   * installing is the strategy's business: `database` puts its seed snapshot
+   * and its dirty-table triggers here, and `transaction` wants neither. Keeping
+   * that knowledge on the strategy side is also what stops admin.ts from having
+   * to import a strategy, which would close an import cycle.
+   */
+  prepare?: (client: AdminClient) => Promise<void>
 }
 
 export interface TemplateResult {
@@ -656,8 +667,20 @@ export async function createTemplate(options: TemplateOptions): Promise<Template
       if (options.migrate !== undefined) await runCommand(options.migrate, templateUrl)
       if (options.seed !== undefined) await runCommand(options.seed, templateUrl)
 
-      // Sealed only once migrate and seed have had their connections, so the
-      // flag can never be set on an unfinished database.
+      if (options.prepare !== undefined) {
+        // Its own connection, closed before sealing: ALLOW_CONNECTIONS false is
+        // refused while anyone is still attached, so a leaked connection here
+        // would fail the whole run at the last step.
+        const prepareClient = await openMaintenance(templateUrl)
+        try {
+          await options.prepare(prepareClient)
+        } finally {
+          await prepareClient.end()
+        }
+      }
+
+      // Sealed only once migrate, seed and prepare have had their connections,
+      // so the flag can never be set on an unfinished database.
       await admin.query(
         `ALTER DATABASE ${quoteIdent(name)} WITH IS_TEMPLATE true ALLOW_CONNECTIONS false`,
       )
